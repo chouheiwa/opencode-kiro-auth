@@ -1,366 +1,116 @@
-import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { loadConfig } from './plugin/config';
 import { AccountManager, generateAccountId } from './plugin/accounts';
-import { createProactiveRefreshQueue } from './plugin/refresh-queue';
-import { createSessionRecoveryHook } from './plugin/recovery';
-import { accessTokenExpired, decodeRefreshToken, encodeRefreshToken } from './kiro/auth';
+import { accessTokenExpired, encodeRefreshToken } from './kiro/auth';
 import { refreshAccessToken } from './plugin/token';
 import { transformToCodeWhisperer } from './plugin/request';
 import { parseEventStream } from './plugin/response';
 import { transformKiroStream } from './plugin/streaming';
 import { fetchUsageLimits } from './plugin/usage';
-import { updateAccountQuota } from './plugin/quota';
+import { updateAccountQuota } from './plugin/usage';
 import { authorizeKiroIDC } from './kiro/oauth-idc';
 import { startIDCAuthServer } from './plugin/server';
 import { KiroTokenRefreshError } from './plugin/errors';
-import type { ManagedAccount, KiroAuthDetails } from './plugin/types';
+import type { ManagedAccount } from './plugin/types';
 import { KIRO_CONSTANTS } from './constants';
 import * as logger from './plugin/logger';
 
 const KIRO_PROVIDER_ID = 'kiro';
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const isNetworkError = (e: any) => e instanceof Error && /econnreset|etimedout|enotfound|network|fetch failed/i.test(e.message);
+const extractModel = (url: string) => url.match(/models\/([^/:]+)/)?.[1] || null;
 
-function isNetworkError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    return message.includes('econnreset') ||
-           message.includes('etimedout') ||
-           message.includes('enotfound') ||
-           message.includes('network') ||
-           message.includes('fetch failed');
-  }
-  return false;
-}
-
-function extractModelFromUrl(url: string): string | null {
-  const match = url.match(/models\/([^/:]+)/);
-  return match?.[1] || null;
-}
-
-export const createKiroPlugin = (providerId: string) => async (
-  { client, directory }: any
-): Promise<any> => {
+export const createKiroPlugin = (id: string) => async ({ client, directory }: any) => {
   const config = loadConfig(directory);
-
-  const sessionRecovery = createSessionRecoveryHook(
-    config.session_recovery,
-    config.auto_resume
-  );
-
   return {
-    event: async (event: any) => {
-      if (event.type === 'session.error') {
-        await sessionRecovery.handleSessionError(event.error, event.sessionId);
-      }
-    },
     auth: {
-      provider: providerId,
-      loader: async (getAuth: any, provider: any) => {
-        const accountManager = await AccountManager.loadFromDisk(
-          config.account_selection_strategy
-        );
-
-        const refreshQueue = createProactiveRefreshQueue({
-          enabled: config.proactive_token_refresh,
-          checkIntervalSeconds: config.token_refresh_interval_seconds,
-          bufferSeconds: config.token_refresh_buffer_seconds,
-        });
-        refreshQueue.setAccountManager(accountManager);
-        refreshQueue.start();
-
+      provider: id,
+      loader: async (getAuth: any) => {
+        await getAuth();
+        const am = await AccountManager.loadFromDisk(config.account_selection_strategy);
         return {
           apiKey: '',
           baseURL: KIRO_CONSTANTS.BASE_URL.replace('/generateAssistantResponse', '').replace('{{region}}', config.default_region || 'us-east-1'),
-          async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-            const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+          async fetch(input: any, init?: any): Promise<Response> {
+            const url = typeof input === 'string' ? input : input.url;
+            if (!KIRO_API_PATTERN.test(url)) return fetch(input, init);
 
-            if (!KIRO_API_PATTERN.test(url)) {
-              return fetch(input, init);
-            }
-
-            const body = init?.body ? JSON.parse(init.body as string) : {};
-            const model = extractModelFromUrl(url) || body.model || 'claude-opus-4-5';
+            const body = init?.body ? JSON.parse(init.body) : {};
+            const model = extractModel(url) || body.model || 'claude-opus-4-5';
+            const think = model.endsWith('-thinking') || !!body.providerOptions?.thinkingConfig;
+            const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000;
             
-            const isThinkingModel = model.endsWith('-thinking');
-            const providerOptions = body.providerOptions || {};
-            const thinkingConfig = providerOptions.thinkingConfig;
-            const thinkingEnabled = isThinkingModel || !!thinkingConfig;
-            const thinkingBudget = thinkingConfig?.thinkingBudget || 20000;
-
-            const rateLimitStateByAccount = new Map<string, { consecutive429: number; lastAt: number }>();
-            const RATE_LIMIT_DEDUP_WINDOW_MS = 2000;
-
-            const showToast = async (message: string, variant: 'info' | 'warning' | 'success' | 'error') => {
-              try {
-                await client.tui.showToast({ body: { message, variant } });
-              } catch {}
-            };
-
-            let retryCount = 0;
-            const maxRetries = config.rate_limit_max_retries;
-
+            let retry = 0;
             while (true) {
-              const accountCount = accountManager.getAccountCount();
-              if (accountCount === 0) throw new Error('No available Kiro accounts. Run `opencode auth login`.');
+              const count = am.getAccountCount();
+              if (count === 0) throw new Error('No accounts. Login first.');
+              const acc = am.getCurrentOrNext();
+              if (!acc) { const w = am.getMinWaitTime() || 60000; await sleep(w); continue; }
 
-              const account = accountManager.getCurrentOrNext();
+              if (count > 1 && am.shouldShowToast()) client.tui.showToast({ body: { message: `Using ${acc.email}`, variant: 'info' } }).catch(() => {});
               
-              if (!account) {
-                const waitMs = accountManager.getMinWaitTime() || 60000;
-                await showToast(`All accounts rate-limited. Waiting ${Math.ceil(waitMs/1000)}s...`, 'warning');
-                await sleep(waitMs);
-                continue;
-              }
-
-              const accountIndex = accountManager.getAccounts().indexOf(account);
-              if (accountCount > 1 && accountManager.shouldShowAccountToast(accountIndex)) {
-                await showToast(`Using ${account.email} (${accountIndex + 1}/${accountCount})`, 'info');
-                accountManager.markToastShown(accountIndex);
-              }
-
-              let authDetails = accountManager.toAuthDetails(account);
-
-              if (accessTokenExpired(authDetails)) {
+              let auth = am.toAuthDetails(acc);
+              if (accessTokenExpired(auth)) {
                 try {
-                  const refreshed = await refreshAccessToken(authDetails);
-                  accountManager.updateFromAuth(account, refreshed);
-                  await accountManager.saveToDisk();
-                  authDetails = refreshed;
-                } catch (error) {
-                  if (error instanceof KiroTokenRefreshError && error.code === 'invalid_grant') {
-                    accountManager.removeAccount(account);
-                    await accountManager.saveToDisk();
-                    continue;
-                  }
-                  throw error;
+                  auth = await refreshAccessToken(auth);
+                  am.updateFromAuth(acc, auth);
+                  await am.saveToDisk();
+                } catch (e) {
+                  if (e instanceof KiroTokenRefreshError && e.code === 'invalid_grant') { am.removeAccount(acc); await am.saveToDisk(); continue; }
+                  throw e;
                 }
               }
 
-              const prepared = transformToCodeWhisperer(
-                url,
-                init?.body as string,
-                model,
-                authDetails,
-                thinkingEnabled,
-                thinkingBudget
-              );
-
+              const prep = transformToCodeWhisperer(url, init?.body, model, auth, think, budget);
               try {
-                const response = await fetch(prepared.url, prepared.init);
-
-                if (response.ok) {
-                  if (config.usage_tracking_enabled) {
-                    try {
-                      const usage = await fetchUsageLimits(authDetails);
-                      updateAccountQuota(account, usage, accountManager);
-                      await accountManager.saveToDisk();
-                    } catch (e) {
-                      logger.error('Failed to update usage', e);
-                    }
+                const res = await fetch(prep.url, prep.init);
+                if (res.ok) {
+                  if (config.usage_tracking_enabled) fetchUsageLimits(auth).then(u => { updateAccountQuota(acc, u, am); am.saveToDisk(); }).catch(() => {});
+                  if (prep.streaming) {
+                    const s = transformKiroStream(res, model, prep.conversationId);
+                    return new Response(new ReadableStream({ async start(c) { try { for await (const e of s) c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(e)}\n\n`)); c.close(); } catch (err) { c.error(err); } } }), { headers: { 'Content-Type': 'text/event-stream' } });
                   }
-
-                  if (prepared.streaming) {
-                    const stream = transformKiroStream(response, model, prepared.conversationId);
-                    return new Response(
-                      new ReadableStream({
-                        async start(controller) {
-                          try {
-                            for await (const event of stream) {
-                              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
-                            }
-                            controller.close();
-                          } catch (error) {
-                            controller.error(error);
-                          }
-                        }
-                      }),
-                      {
-                        headers: {
-                          'Content-Type': 'text/event-stream',
-                          'Cache-Control': 'no-cache',
-                          'Connection': 'keep-alive',
-                        }
-                      }
-                    );
-                  } else {
-                    const text = await response.text();
-                    const parsed = parseEventStream(text);
-                    const openaiResponse: any = {
-                      id: prepared.conversationId,
-                      object: 'chat.completion',
-                      created: Math.floor(Date.now() / 1000),
-                      model: model,
-                      choices: [
-                        {
-                          index: 0,
-                          message: { role: 'assistant', content: parsed.content },
-                          finish_reason: parsed.stopReason === 'tool_use' ? 'tool_calls' : 'stop',
-                        }
-                      ],
-                      usage: {
-                        prompt_tokens: parsed.inputTokens || 0,
-                        completion_tokens: parsed.outputTokens || 0,
-                        total_tokens: (parsed.inputTokens || 0) + (parsed.outputTokens || 0),
-                      },
-                    };
-
-                    if (parsed.toolCalls.length > 0) {
-                      openaiResponse.choices[0].message.tool_calls = parsed.toolCalls.map((tc) => ({
-                        id: tc.toolUseId,
-                        type: 'function',
-                        function: {
-                          name: tc.name,
-                          arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input),
-                        },
-                      }));
-                    }
-
-                    return new Response(JSON.stringify(openaiResponse), {
-                      headers: { 'Content-Type': 'application/json' }
-                    });
-                  }
+                  const text = await res.text();
+                  const p = parseEventStream(text);
+                  const oai: any = { id: prep.conversationId, object: 'chat.completion', created: Math.floor(Date.now()/1000), model, choices: [{ index: 0, message: { role: 'assistant', content: p.content }, finish_reason: p.stopReason === 'tool_use' ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: p.inputTokens || 0, completion_tokens: p.outputTokens || 0, total_tokens: (p.inputTokens || 0) + (p.outputTokens || 0) } };
+                  if (p.toolCalls.length > 0) oai.choices[0].message.tool_calls = p.toolCalls.map(tc => ({ id: tc.toolUseId, type: 'function', function: { name: tc.name, arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input) } }));
+                  return new Response(JSON.stringify(oai), { headers: { 'Content-Type': 'application/json' } });
                 }
 
-                const status = response.status;
-                if (status === 401 && retryCount < maxRetries) {
-                  const refreshed = await refreshAccessToken(authDetails);
-                  accountManager.updateFromAuth(account, refreshed);
-                  await accountManager.saveToDisk();
-                  retryCount++;
-                  continue;
-                }
-
-                if (status === 429) {
-                  const retryAfter = parseInt(response.headers.get('retry-after') || '60') * 1000;
-                  const now = Date.now();
-                  const state = rateLimitStateByAccount.get(account.id) || { consecutive429: 0, lastAt: 0 };
-                  
-                  if (now - state.lastAt > RATE_LIMIT_DEDUP_WINDOW_MS) {
-                    state.consecutive429++;
-                    state.lastAt = now;
-                    rateLimitStateByAccount.set(account.id, state);
-                  }
-
-                  accountManager.markRateLimited(account, retryAfter);
-                  await accountManager.saveToDisk();
-
-                  if (accountCount > 1) {
-                    await showToast(`Rate limited on ${account.email}. Switching account...`, 'warning');
-                    continue;
-                  } else {
-                    const backoff = Math.min(1000 * Math.pow(2, state.consecutive429 - 1), 60000);
-                    await showToast(`Rate limited. Retrying in ${Math.ceil(backoff/1000)}s...`, 'warning');
-                    await sleep(backoff);
-                    continue;
-                  }
-                }
-
-                if ((status === 402 || status === 403) && accountCount > 1) {
-                  accountManager.markUnhealthy(account, status === 402 ? 'Quota exhausted' : 'Forbidden');
-                  await accountManager.saveToDisk();
-                  continue;
-                }
-
-                throw new Error(`Kiro API error: ${status}`);
-
-              } catch (error: any) {
-                if (isNetworkError(error) && retryCount < maxRetries) {
-                  const delay = 5000 * Math.pow(2, retryCount);
-                  await showToast(`Network error. Retrying in ${Math.ceil(delay/1000)}s...`, 'warning');
-                  await sleep(delay);
-                  retryCount++;
-                  continue;
-                }
-                throw error;
+                if (res.status === 401 && retry < config.rate_limit_max_retries) { retry++; continue; }
+                if (res.status === 429) { am.markRateLimited(acc, 60000); await am.saveToDisk(); continue; }
+                if ((res.status === 402 || res.status === 403) && count > 1) { am.markUnhealthy(acc, 'Quota'); await am.saveToDisk(); continue; }
+                throw new Error(`Kiro Error: ${res.status}`);
+              } catch (e) {
+                if (isNetworkError(e) && retry < config.rate_limit_max_retries) { await sleep(5000 * Math.pow(2, retry)); retry++; continue; }
+                throw e;
               }
             }
           }
         };
       },
-      methods: [
-        {
-          id: 'idc',
-          label: 'AWS Builder ID (IDC)',
-          type: 'oauth',
-          authorize: async () => {
-            return new Promise(async (resolve) => {
-              const region = config.default_region;
-              
-              const authData = await authorizeKiroIDC(region);
-              
-              const { url, waitForAuth } = await startIDCAuthServer(authData);
-              
-              resolve({
-                url,
-                instructions: 'Opening browser for AWS Builder ID authentication...',
-                method: 'auto',
-                callback: async () => {
-                  try {
-                    const result = await waitForAuth();
-                    
-                    const accountManager = await AccountManager.loadFromDisk(
-                      config.account_selection_strategy
-                    );
-                    
-                    const account: ManagedAccount = {
-                      id: generateAccountId(),
-                      email: result.email,
-                      authMethod: 'idc',
-                      region,
-                      clientId: result.clientId,
-                      clientSecret: result.clientSecret,
-                      refreshToken: result.refreshToken,
-                      accessToken: result.accessToken,
-                      expiresAt: result.expiresAt,
-                      rateLimitResetTime: 0,
-                      isHealthy: true,
-                    };
-                    
-                    // Try to fetch real email immediately
-                    try {
-                      const usage = await fetchUsageLimits({
-                        refresh: encodeRefreshToken({
-                          refreshToken: result.refreshToken,
-                          clientId: result.clientId,
-                          clientSecret: result.clientSecret,
-                          authMethod: 'idc'
-                        }),
-                        access: result.accessToken,
-                        expires: result.expiresAt,
-                        authMethod: 'idc',
-                        region,
-                        clientId: result.clientId,
-                        clientSecret: result.clientSecret,
-                        email: result.email
-                      });
-                      
-                      accountManager.updateUsage(account.id, {
-                        usedCount: usage.usedCount,
-                        limitCount: usage.limitCount,
-                        realEmail: usage.email
-                      });
-                    } catch (e) {
-                      // Silently continue if usage fetch fails during login
-                    }
-
-                    accountManager.addAccount(account);
-                    await accountManager.saveToDisk();
-                    
-                    return { type: 'success', key: result.accessToken };
-                  } catch (error) {
-                    return { type: 'failed' };
-                  }
-                }
-              });
-            });
-          }
-        }
-      ]
+      methods: [{
+        id: 'idc', label: 'AWS Builder ID (IDC)', type: 'oauth',
+        authorize: async () => new Promise(async (resolve) => {
+          const region = config.default_region;
+          const authData = await authorizeKiroIDC(region);
+          const { url, waitForAuth } = await startIDCAuthServer(authData);
+          resolve({ url, instructions: 'Opening browser...', method: 'auto', callback: async () => {
+            try {
+              const res = await waitForAuth();
+              const am = await AccountManager.loadFromDisk(config.account_selection_strategy);
+              const acc: ManagedAccount = { id: generateAccountId(), email: res.email, authMethod: 'idc', region, clientId: res.clientId, clientSecret: res.clientSecret, refreshToken: res.refreshToken, accessToken: res.accessToken, expiresAt: res.expiresAt, rateLimitResetTime: 0, isHealthy: true };
+              try {
+                const u = await fetchUsageLimits({ refresh: encodeRefreshToken({ refreshToken: res.refreshToken, clientId: res.clientId, clientSecret: res.clientSecret, authMethod: 'idc' }), access: res.accessToken, expires: res.expiresAt, authMethod: 'idc', region, clientId: res.clientId, clientSecret: res.clientSecret, email: res.email });
+                am.updateUsage(acc.id, { usedCount: u.usedCount, limitCount: u.limitCount, realEmail: u.email });
+              } catch {}
+              am.addAccount(acc); await am.saveToDisk();
+              return { type: 'success', key: res.accessToken };
+            } catch { return { type: 'failed' }; }
+          }});
+        })
+      }]
     }
   };
 };

@@ -1,404 +1,52 @@
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
-import { parse as parseUrl } from 'node:url';
-import * as logger from './logger';
+import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { getIDCAuthHtml, getSuccessHtml, getErrorHtml } from './auth-page';
-import { pollKiroIDCToken } from '../kiro/oauth-idc';
-import type { KiroIDCTokenResult } from '../kiro/oauth-idc';
 import type { KiroRegion } from './types';
+import * as logger from './logger';
 
-const DEFAULT_PORT = 8080;
-const CALLBACK_TIMEOUT = 5 * 60 * 1000;
-const IDC_TIMEOUT = 15 * 60 * 1000;
+export interface KiroIDCTokenResult { email: string; accessToken: string; refreshToken: string; expiresAt: number; clientId: string; clientSecret: string; }
+export interface IDCAuthData { verificationUrl: string; verificationUriComplete: string; userCode: string; deviceCode: string; clientId: string; clientSecret: string; interval: number; expiresIn: number; region: KiroRegion; }
 
-interface CallbackResult {
-  code: string;
-  state: string;
-}
-
-interface CallbackServerResult {
-  url: string;
-  waitForCallback: () => Promise<CallbackResult>;
-}
-
-export interface IDCAuthData {
-  verificationUrl: string;
-  verificationUriComplete: string;
-  userCode: string;
-  deviceCode: string;
-  clientId: string;
-  clientSecret: string;
-  interval: number;
-  expiresIn: number;
-  region: KiroRegion;
-}
-
-export interface AuthStatus {
-  status: 'pending' | 'success' | 'failed' | 'timeout';
-  data?: any;
-  error?: string;
-}
-
-function parseQueryParams(url: string): Record<string, string> {
-  const params: Record<string, string> = {};
-  
-  try {
-    const parsed = new URL(url, 'http://localhost');
-    const query = parsed.searchParams;
-    
-    query.forEach((value, key) => {
-      params[key] = value;
-    });
-  } catch (error) {
-    logger.error('Failed to parse query params', error);
-  }
-  
-  return params;
-}
-
-function sendHtmlResponse(res: ServerResponse, html: string): void {
-  res.writeHead(200, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Content-Length': Buffer.byteLength(html),
-  });
-  res.end(html);
-}
-
-function sendJsonResponse(res: ServerResponse, data: any): void {
-  const json = JSON.stringify(data);
-  res.writeHead(200, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(json),
-  });
-  res.end(json);
-}
-
-function sendErrorResponse(res: ServerResponse, statusCode: number, message: string): void {
-  const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Error</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      background: #f5f5f5;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    h1 {
-      color: #e74c3c;
-      margin: 0 0 1rem 0;
-    }
-    p {
-      color: #666;
-      margin: 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Error</h1>
-    <p>${message}</p>
-  </div>
-</body>
-</html>
-  `.trim();
-  
-  res.writeHead(statusCode, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Content-Length': Buffer.byteLength(html),
-  });
-  res.end(html);
-}
-
-function sendSuccessResponse(res: ServerResponse): void {
-  const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Authentication Successful</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      background: #f5f5f5;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    h1 {
-      color: #27ae60;
-      margin: 0 0 1rem 0;
-    }
-    p {
-      color: #666;
-      margin: 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Authentication Successful</h1>
-    <p>You can close this window and return to the terminal.</p>
-  </div>
-</body>
-</html>
-  `.trim();
-  
-  sendHtmlResponse(res, html);
-}
-
-export async function startSocialAuthServer(port: number = DEFAULT_PORT): Promise<CallbackServerResult> {
+export function startIDCAuthServer(authData: IDCAuthData, port: number = 19847): Promise<{ url: string; waitForAuth: () => Promise<KiroIDCTokenResult>; }> {
   return new Promise((resolve, reject) => {
-    let server: Server | null = null;
-    let timeoutId: NodeJS.Timeout | null = null;
-    let callbackResolver: ((result: CallbackResult) => void) | null = null;
-    let callbackRejector: ((error: Error) => void) | null = null;
-    
-    const cleanup = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-      
-      if (server) {
-        server.close((err) => {
-          if (err) {
-            logger.error('Error closing callback server', err);
-          }
-        });
-        server = null;
-      }
-    };
-    
-    const handleRequest = (req: IncomingMessage, res: ServerResponse) => {
-      const url = req.url || '';
-      
-      if (!url.startsWith('/callback')) {
-        sendErrorResponse(res, 404, 'Not Found');
-        return;
-      }
-      
-      const params = parseQueryParams(url);
-      const code = params.code;
-      const state = params.state;
-      
-      if (!code) {
-        sendErrorResponse(res, 400, 'Missing authorization code');
-        if (callbackRejector) {
-          callbackRejector(new Error('Missing authorization code'));
-        }
-        cleanup();
-        return;
-      }
-      
-      if (!state) {
-        sendErrorResponse(res, 400, 'Missing state parameter');
-        if (callbackRejector) {
-          callbackRejector(new Error('Missing state parameter'));
-        }
-        cleanup();
-        return;
-      }
-      
-      sendSuccessResponse(res);
-      
-      if (callbackResolver) {
-        callbackResolver({ code, state });
-      }
-      
-      cleanup();
-    };
-    
-    server = createServer(handleRequest);
-    
-    server.on('error', (error) => {
-      logger.error('Callback server error', error);
-      cleanup();
-      reject(error);
-    });
-    
-    server.listen(port, 'localhost', () => {
-      const url = `http://localhost:${port}/callback`;
-      logger.log('Callback server started', { url });
-      
-      timeoutId = setTimeout(() => {
-        logger.warn('Callback server timeout');
-        if (callbackRejector) {
-          callbackRejector(new Error('Callback timeout'));
-        }
-        cleanup();
-      }, CALLBACK_TIMEOUT);
-      
-      const waitForCallback = (): Promise<CallbackResult> => {
-        return new Promise((resolveCallback, rejectCallback) => {
-          callbackResolver = resolveCallback;
-          callbackRejector = rejectCallback;
-        });
-      };
-      
-      resolve({
-        url,
-        waitForCallback,
-      });
-    });
-  });
-}
+    let server: Server | null = null; let timeoutId: any = null;
+    let resolver: any = null; let rejector: any = null;
+    const status: any = { status: 'pending' };
 
-export function startIDCAuthServer(
-  authData: IDCAuthData,
-  port: number = 19847
-): Promise<{
-  url: string;
-  waitForAuth: () => Promise<KiroIDCTokenResult>;
-}> {
-  return new Promise((resolve, reject) => {
-    let server: Server | null = null;
-    let timeoutId: NodeJS.Timeout | null = null;
-    let authResolver: ((result: KiroIDCTokenResult) => void) | null = null;
-    let authRejector: ((error: Error) => void) | null = null;
-    
-    const authStatus: AuthStatus = {
-      status: 'pending',
-    };
-    
-    const cleanup = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-      
-      if (server) {
-        server.close((err) => {
-          if (err) {
-            logger.error('Error closing IDC auth server', err);
-          }
-        });
-        server = null;
-      }
-    };
-    
-    const startPolling = async () => {
+    const cleanup = () => { if (timeoutId) clearTimeout(timeoutId); if (server) server.close(); };
+    const sendHtml = (res: ServerResponse, html: string) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(html); };
+
+    const poll = async () => {
       try {
-        const result = await pollKiroIDCToken(
-          authData.clientId,
-          authData.clientSecret,
-          authData.deviceCode,
-          authData.interval,
-          authData.expiresIn,
-          authData.region
-        );
-        
-        authStatus.status = 'success';
-        authStatus.data = result;
-        
-        if (authResolver) {
-          authResolver(result);
-        }
-        
-        setTimeout(cleanup, 2000);
-      } catch (error) {
-        authStatus.status = 'failed';
-        authStatus.error = error instanceof Error ? error.message : 'Unknown error';
-        
-        if (authRejector) {
-          authRejector(error instanceof Error ? error : new Error('Authentication failed'));
-        }
-        
-        setTimeout(cleanup, 2000);
-      }
+        const body = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: authData.deviceCode, client_id: authData.clientId, client_secret: authData.clientSecret });
+        const res = await fetch(`https://oidc.${authData.region}.amazonaws.com/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+        const d = await res.json();
+        if (res.ok) {
+          const acc = d.access_token, ref = d.refresh_token, exp = Date.now() + (d.expires_in * 1000);
+          const infoRes = await fetch('https://view.awsapps.com/api/user/info', { headers: { 'Authorization': `Bearer ${acc}` } });
+          const info = await infoRes.json();
+          const email = info.email || info.userName || 'builder-id@aws.amazon.com';
+          status.status = 'success';
+          if (resolver) resolver({ email, accessToken: acc, refreshToken: ref, expiresAt: exp, clientId: authData.clientId, clientSecret: authData.clientSecret });
+          setTimeout(cleanup, 2000);
+        } else if (d.error === 'authorization_pending') setTimeout(poll, authData.interval * 1000);
+        else { status.status = 'failed'; status.error = d.error_description || d.error; if (rejector) rejector(new Error(status.error)); setTimeout(cleanup, 2000); }
+      } catch (e: any) { status.status = 'failed'; status.error = e.message; if (rejector) rejector(e); setTimeout(cleanup, 2000); }
     };
-    
-    const handleRequest = (req: IncomingMessage, res: ServerResponse) => {
-      const url = req.url || '';
-      
-        if (url === '/' || url.startsWith('/?')) {
-          const statusUrl = `http://localhost:${port}/status`;
-          const html = getIDCAuthHtml(
-            authData.verificationUriComplete,
-            authData.userCode,
-            statusUrl
-          );
-        sendHtmlResponse(res, html);
-        return;
-      }
-      
-      if (url === '/status') {
-        sendJsonResponse(res, authStatus);
-        return;
-      }
-      
-      if (url === '/success') {
-        const html = getSuccessHtml();
-        sendHtmlResponse(res, html);
-        return;
-      }
-      
-      if (url === '/error') {
-        const html = getErrorHtml(authStatus.error || 'Authentication failed');
-        sendHtmlResponse(res, html);
-        return;
-      }
-      
-      sendErrorResponse(res, 404, 'Not Found');
-    };
-    
-    server = createServer(handleRequest);
-    
-    server.on('error', (error) => {
-      logger.error('IDC auth server error', error);
-      cleanup();
-      reject(error);
+
+    server = createServer((req, res) => {
+      const u = req.url || '';
+      if (u === '/' || u.startsWith('/?')) sendHtml(res, getIDCAuthHtml(authData.verificationUriComplete, authData.userCode, `http://127.0.0.1:${port}/status`));
+      else if (u === '/status') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(status)); }
+      else if (u === '/success') sendHtml(res, getSuccessHtml());
+      else if (u === '/error') sendHtml(res, getErrorHtml(status.error || 'Failed'));
+      else { res.writeHead(404); res.end(); }
     });
-    
+
+    server.on('error', (e) => { cleanup(); reject(e); });
     server.listen(port, '127.0.0.1', () => {
-      const url = `http://127.0.0.1:${port}`;
-      logger.log('IDC auth server started', { url });
-      
-      timeoutId = setTimeout(() => {
-        logger.warn('IDC auth server timeout');
-        authStatus.status = 'timeout';
-        authStatus.error = 'Authentication timeout';
-        
-        if (authRejector) {
-          authRejector(new Error('Authentication timeout'));
-        }
-        cleanup();
-      }, IDC_TIMEOUT);
-      
-      startPolling();
-      
-      const waitForAuth = (): Promise<KiroIDCTokenResult> => {
-        return new Promise((resolveAuth, rejectAuth) => {
-          authResolver = resolveAuth;
-          authRejector = rejectAuth;
-        });
-      };
-      
-      resolve({
-        url,
-        waitForAuth,
-      });
+      timeoutId = setTimeout(() => { status.status = 'timeout'; if (rejector) rejector(new Error('Timeout')); cleanup(); }, 900000);
+      poll();
+      resolve({ url: `http://127.0.0.1:${port}`, waitForAuth: () => new Promise((rv, rj) => { resolver = rv; rejector = rj; }) });
     });
   });
 }

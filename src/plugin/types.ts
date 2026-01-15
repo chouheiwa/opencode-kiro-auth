@@ -1,5 +1,4 @@
-export type KiroAuthMethod = 'social' | 'idc';
-
+export type KiroAuthMethod = 'idc';
 export type KiroRegion = 'us-east-1' | 'us-west-2';
 
 export interface KiroAuthDetails {
@@ -8,28 +7,29 @@ export interface KiroAuthDetails {
   expires: number;
   authMethod: KiroAuthMethod;
   region: KiroRegion;
-  profileArn?: string;
   clientId?: string;
   clientSecret?: string;
   email?: string;
+  profileArn?: string;
 }
 
 export interface RefreshParts {
   refreshToken: string;
-  profileArn?: string;
   clientId?: string;
   clientSecret?: string;
+  profileArn?: string;
   authMethod?: KiroAuthMethod;
 }
 
 export interface ManagedAccount {
   id: string;
   email: string;
+  realEmail?: string;
   authMethod: KiroAuthMethod;
   region: KiroRegion;
-  profileArn?: string;
   clientId?: string;
   clientSecret?: string;
+  profileArn?: string;
   refreshToken: string;
   accessToken: string;
   expiresAt: number;
@@ -45,11 +45,12 @@ export interface ManagedAccount {
 export interface AccountMetadata {
   id: string;
   email: string;
+  realEmail?: string;
   authMethod: KiroAuthMethod;
   region: KiroRegion;
-  profileArn?: string;
   clientId?: string;
   clientSecret?: string;
+  profileArn?: string;
   refreshToken: string;
   accessToken: string;
   expiresAt: number;
@@ -57,14 +58,24 @@ export interface AccountMetadata {
   isHealthy: boolean;
   unhealthyReason?: string;
   recoveryTime?: number;
-  usedCount?: number;
-  limitCount?: number;
 }
 
 export interface AccountStorage {
   version: 1;
   accounts: AccountMetadata[];
   activeIndex: number;
+}
+
+export interface UsageMetadata {
+  usedCount: number;
+  limitCount: number;
+  realEmail?: string;
+  lastSync: number;
+}
+
+export interface UsageStorage {
+  version: 1;
+  usage: Record<string, UsageMetadata>;
 }
 
 export interface CodeWhispererMessage {
@@ -76,7 +87,7 @@ export interface CodeWhispererMessage {
     userInputMessageContext?: {
       toolResults?: Array<{
         toolUseId: string;
-        content: Array<{ text?: string; image?: { format: string; source: { bytes: string } } }>;
+        content: Array<{ text?: string }>;
         status?: string;
       }>;
       tools?: Array<{
@@ -90,6 +101,11 @@ export interface CodeWhispererMessage {
   };
   assistantResponseMessage?: {
     content: string;
+    toolUses?: Array<{
+      input: any;
+      name: string;
+      toolUseId: string;
+    }>;
   };
 }
 
@@ -116,60 +132,6 @@ export interface ParsedResponse {
   inputTokens?: number;
   outputTokens?: number;
 }
-
-export interface UsageMetadata {
-  usedCount: number;
-  limitCount: number;
-  realEmail?: string;
-  lastSync: number;
-}
-
-export interface UsageStorage {
-  version: 1;
-  usage: Record<string, UsageMetadata>;
-}
-
-export interface ManagedAccount {
-  id: string;
-  email: string;
-  realEmail?: string;
-  authMethod: KiroAuthMethod;
-  region: KiroRegion;
-  profileArn?: string;
-  clientId?: string;
-  clientSecret?: string;
-  refreshToken: string;
-  accessToken: string;
-  expiresAt: number;
-  rateLimitResetTime: number;
-  isHealthy: boolean;
-  unhealthyReason?: string;
-  recoveryTime?: number;
-  usedCount?: number;
-  limitCount?: number;
-  lastUsed?: number;
-}
-
-export interface AccountMetadata {
-  id: string;
-  email: string;
-  realEmail?: string;
-  authMethod: KiroAuthMethod;
-  region: KiroRegion;
-  profileArn?: string;
-  clientId?: string;
-  clientSecret?: string;
-  refreshToken: string;
-  accessToken: string;
-  expiresAt: number;
-  rateLimitResetTime: number;
-  isHealthy: boolean;
-  unhealthyReason?: string;
-  recoveryTime?: number;
-  usedCount?: number;
-  limitCount?: number;
-}
-
 
 export interface PreparedRequest {
   url: string;
