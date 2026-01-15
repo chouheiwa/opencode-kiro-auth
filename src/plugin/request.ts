@@ -150,6 +150,13 @@ export function transformToCodeWhisperer(
       if (toolResults.length > 0) {
         userInputMessage.userInputMessageContext = { toolResults: deduplicateToolResults(toolResults) };
       }
+
+      if (history.length > 0) {
+        const last = history[history.length - 1];
+        if (last && last.userInputMessage) {
+          history.push({ assistantResponseMessage: { content: 'Continue' } });
+        }
+      }
       history.push({ userInputMessage });
     } else if (message.role === 'assistant') {
       const assistantResponseMessage: any = { content: '' };
@@ -180,6 +187,13 @@ export function transformToCodeWhisperer(
           : `<thinking>${thinkingText}</thinking>`;
       }
       if (toolUses.length > 0) assistantResponseMessage.toolUses = toolUses;
+      
+      if (history.length > 0) {
+        const last = history[history.length - 1];
+        if (last && last.assistantResponseMessage) {
+          history.push({ userInputMessage: { content: 'Continue', modelId: resolvedModel, origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR } });
+        }
+      }
       history.push({ assistantResponseMessage });
     }
   }
@@ -271,10 +285,6 @@ export function transformToCodeWhisperer(
       }
     }
   };
-
-  if (history.length > 0) {
-    request.conversationState.history = history;
-  }
 
   const userInputMessage = request.conversationState.currentMessage.userInputMessage!;
   if (currentImages.length > 0) userInputMessage.images = currentImages;

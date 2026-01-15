@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { loadAccounts, saveAccounts } from './storage';
+import { loadAccounts, saveAccounts, loadUsage, saveUsage } from './storage';
 import type { 
   ManagedAccount, 
   AccountMetadata, 
-  AccountStorage, 
   AccountSelectionStrategy,
   KiroAuthDetails,
   RefreshParts,
+  UsageMetadata,
+  AccountStorage,
 } from './types';
 import * as logger from './logger';
 import { KIRO_CONSTANTS } from '../constants';
@@ -35,19 +36,33 @@ export function isAccountAvailable(account: ManagedAccount): boolean {
 
 export class AccountManager {
   private accounts: ManagedAccount[];
+  private usage: Record<string, UsageMetadata>;
   private cursor: number;
   private strategy: AccountSelectionStrategy;
   private lastToastAccountIndex = -1;
   private lastToastTime = 0;
 
-  constructor(accounts: ManagedAccount[], strategy: AccountSelectionStrategy = 'sticky') {
+  constructor(accounts: ManagedAccount[], usage: Record<string, UsageMetadata>, strategy: AccountSelectionStrategy = 'sticky') {
     this.accounts = accounts;
+    this.usage = usage;
     this.cursor = 0;
     this.strategy = strategy;
+    
+    // Sync usage into accounts
+    for (const account of this.accounts) {
+      const meta = this.usage[account.id];
+      if (meta) {
+        account.usedCount = meta.usedCount;
+        account.limitCount = meta.limitCount;
+        account.realEmail = meta.realEmail;
+      }
+    }
   }
 
   static async loadFromDisk(strategy?: AccountSelectionStrategy): Promise<AccountManager> {
     const storage = await loadAccounts();
+    const usageStorage = await loadUsage();
+    
     const accounts: ManagedAccount[] = storage.accounts.map((meta) => ({
       id: meta.id,
       email: meta.email,
@@ -63,15 +78,17 @@ export class AccountManager {
       isHealthy: meta.isHealthy,
       unhealthyReason: meta.unhealthyReason,
       recoveryTime: meta.recoveryTime,
-      usedCount: meta.usedCount,
-      limitCount: meta.limitCount,
     }));
     
-    return new AccountManager(accounts, strategy || 'sticky');
+    return new AccountManager(accounts, usageStorage.usage, strategy || 'sticky');
   }
 
   getAccountCount(): number {
     return this.accounts.length;
+  }
+
+  getAccounts(): ManagedAccount[] {
+    return [...this.accounts];
   }
 
   shouldShowAccountToast(accountIndex: number, debounceMs = 30000): boolean {
@@ -150,7 +167,7 @@ export class AccountManager {
       }
       return null;
     }
-    
+
     if (this.strategy === 'lowest-usage') {
       const sorted = [...availableAccounts].sort((a, b) => {
         const usageA = a.usedCount || 0;
@@ -175,6 +192,59 @@ export class AccountManager {
     return null;
   }
 
+  updateUsage(accountId: string, metadata: { usedCount: number; limitCount: number; realEmail?: string }): void {
+    const account = this.accounts.find(a => a.id === accountId);
+    if (account) {
+      account.usedCount = metadata.usedCount;
+      account.limitCount = metadata.limitCount;
+      if (metadata.realEmail) account.realEmail = metadata.realEmail;
+    }
+    
+    this.usage[accountId] = {
+      ...metadata,
+      lastSync: Date.now()
+    };
+  }
+
+  addAccount(account: ManagedAccount): void {
+    const index = this.accounts.findIndex((a) => a.id === account.id);
+    if (index === -1) {
+      this.accounts.push(account);
+    } else {
+      this.accounts[index] = account;
+    }
+  }
+
+  removeAccount(account: ManagedAccount): void {
+    this.accounts = this.accounts.filter((a) => a.id !== account.id);
+    delete this.usage[account.id];
+    if (this.cursor >= this.accounts.length && this.accounts.length > 0) {
+      this.cursor = this.accounts.length - 1;
+    } else if (this.accounts.length === 0) {
+      this.cursor = 0;
+    }
+  }
+
+  updateFromAuth(account: ManagedAccount, auth: KiroAuthDetails): void {
+    const accountIndex = this.accounts.findIndex((a) => a.id === account.id);
+    if (accountIndex !== -1) {
+      const acc = this.accounts[accountIndex];
+      if (acc) {
+        acc.accessToken = auth.access;
+        acc.expiresAt = auth.expires;
+        acc.lastUsed = Date.now();
+        if (auth.email && auth.email !== 'builder-id@aws.amazon.com') {
+          acc.realEmail = auth.email;
+        }
+        
+        const parts = decodeRefreshToken(auth.refresh);
+        acc.refreshToken = parts.refreshToken;
+        if (parts.profileArn) acc.profileArn = parts.profileArn;
+        if (parts.clientId) acc.clientId = parts.clientId;
+      }
+    }
+  }
+
   markRateLimited(account: ManagedAccount, retryAfterMs: number): void {
     const accountIndex = this.accounts.findIndex((a) => a.id === account.id);
     if (accountIndex !== -1) {
@@ -192,68 +262,9 @@ export class AccountManager {
       if (acc) {
         acc.isHealthy = false;
         acc.unhealthyReason = reason;
-        if (recoveryTime) {
-          acc.recoveryTime = recoveryTime;
-        }
+        acc.recoveryTime = recoveryTime;
       }
     }
-  }
-
-  markHealthy(account: ManagedAccount): void {
-    const accountIndex = this.accounts.findIndex((a) => a.id === account.id);
-    if (accountIndex !== -1) {
-      const acc = this.accounts[accountIndex];
-      if (acc) {
-        acc.isHealthy = true;
-        delete acc.unhealthyReason;
-        delete acc.recoveryTime;
-      }
-    }
-  }
-
-  updateFromAuth(account: ManagedAccount, auth: KiroAuthDetails): void {
-    const accountIndex = this.accounts.findIndex((a) => a.id === account.id);
-    if (accountIndex !== -1) {
-      const acc = this.accounts[accountIndex];
-      if (acc) {
-        acc.accessToken = auth.access;
-        acc.expiresAt = auth.expires;
-        acc.lastUsed = Date.now();
-        
-        const parts = decodeRefreshToken(auth.refresh);
-        acc.refreshToken = parts.refreshToken;
-        if (parts.profileArn) {
-          acc.profileArn = parts.profileArn;
-        }
-        if (parts.clientId) {
-          acc.clientId = parts.clientId;
-        }
-      }
-    }
-  }
-
-  addAccount(account: ManagedAccount): void {
-    if (!account.id) {
-      account.id = generateAccountId();
-    }
-    this.accounts.push(account);
-  }
-
-  removeAccount(account: ManagedAccount): void {
-    const accountIndex = this.accounts.findIndex((a) => a.id === account.id);
-    if (accountIndex !== -1) {
-      this.accounts.splice(accountIndex, 1);
-      
-      if (this.cursor >= this.accounts.length && this.accounts.length > 0) {
-        this.cursor = this.accounts.length - 1;
-      } else if (this.accounts.length === 0) {
-        this.cursor = 0;
-      }
-    }
-  }
-
-  getAccounts(): ManagedAccount[] {
-    return [...this.accounts];
   }
 
   async saveToDisk(): Promise<void> {
@@ -272,17 +283,18 @@ export class AccountManager {
       isHealthy: account.isHealthy,
       unhealthyReason: account.unhealthyReason,
       recoveryTime: account.recoveryTime,
-      usedCount: account.usedCount,
-      limitCount: account.limitCount,
     }));
     
-    const storage: AccountStorage = {
+    await saveAccounts({
       version: 1,
       accounts: metadata,
       activeIndex: this.cursor,
-    };
+    });
     
-    await saveAccounts(storage);
+    await saveUsage({
+      version: 1,
+      usage: this.usage
+    });
   }
 
   toAuthDetails(account: ManagedAccount): KiroAuthDetails {

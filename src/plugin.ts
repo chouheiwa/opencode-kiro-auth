@@ -1,4 +1,5 @@
-
+import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadConfig } from './plugin/config';
 import { AccountManager, generateAccountId } from './plugin/accounts';
 import { createProactiveRefreshQueue } from './plugin/refresh-queue';
@@ -8,13 +9,14 @@ import { refreshAccessToken } from './plugin/token';
 import { transformToCodeWhisperer } from './plugin/request';
 import { parseEventStream } from './plugin/response';
 import { transformKiroStream } from './plugin/streaming';
-import { fetchUsageLimits, calculateRecoveryTime } from './plugin/usage';
+import { fetchUsageLimits } from './plugin/usage';
 import { updateAccountQuota } from './plugin/quota';
 import { authorizeKiroIDC } from './kiro/oauth-idc';
 import { startIDCAuthServer } from './plugin/server';
 import { KiroTokenRefreshError } from './plugin/errors';
 import type { ManagedAccount, KiroAuthDetails } from './plugin/types';
 import { KIRO_CONSTANTS } from './constants';
+import * as logger from './plugin/logger';
 
 const KIRO_PROVIDER_ID = 'kiro';
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/;
@@ -59,8 +61,6 @@ export const createKiroPlugin = (providerId: string) => async (
     auth: {
       provider: providerId,
       loader: async (getAuth: any, provider: any) => {
-        const auth = await getAuth();
-
         const accountManager = await AccountManager.loadFromDisk(
           config.account_selection_strategy
         );
@@ -123,13 +123,14 @@ export const createKiroPlugin = (providerId: string) => async (
                 accountManager.markToastShown(accountIndex);
               }
 
-              const authDetails = accountManager.toAuthDetails(account);
+              let authDetails = accountManager.toAuthDetails(account);
 
               if (accessTokenExpired(authDetails)) {
                 try {
                   const refreshed = await refreshAccessToken(authDetails);
                   accountManager.updateFromAuth(account, refreshed);
                   await accountManager.saveToDisk();
+                  authDetails = refreshed;
                 } catch (error) {
                   if (error instanceof KiroTokenRefreshError && error.code === 'invalid_grant') {
                     accountManager.removeAccount(account);
@@ -144,7 +145,7 @@ export const createKiroPlugin = (providerId: string) => async (
                 url,
                 init?.body as string,
                 model,
-                accountManager.toAuthDetails(account),
+                authDetails,
                 thinkingEnabled,
                 thinkingBudget
               );
@@ -154,11 +155,13 @@ export const createKiroPlugin = (providerId: string) => async (
 
                 if (response.ok) {
                   if (config.usage_tracking_enabled) {
-                    fetchUsageLimits(accountManager.toAuthDetails(account))
-                      .then(usage => {
-                        updateAccountQuota(account, usage);
-                        accountManager.saveToDisk();
-                      }).catch(() => {});
+                    try {
+                      const usage = await fetchUsageLimits(authDetails);
+                      updateAccountQuota(account, usage, accountManager);
+                      await accountManager.saveToDisk();
+                    } catch (e) {
+                      logger.error('Failed to update usage', e);
+                    }
                   }
 
                   if (prepared.streaming) {
@@ -265,9 +268,9 @@ export const createKiroPlugin = (providerId: string) => async (
 
                 throw new Error(`Kiro API error: ${status}`);
 
-              } catch (error) {
+              } catch (error: any) {
                 if (isNetworkError(error) && retryCount < maxRetries) {
-                  const delay = config.rate_limit_retry_delay_ms * Math.pow(2, retryCount);
+                  const delay = 5000 * Math.pow(2, retryCount);
                   await showToast(`Network error. Retrying in ${Math.ceil(delay/1000)}s...`, 'warning');
                   await sleep(delay);
                   retryCount++;
@@ -318,6 +321,33 @@ export const createKiroPlugin = (providerId: string) => async (
                       isHealthy: true,
                     };
                     
+                    // Try to fetch real email immediately
+                    try {
+                      const usage = await fetchUsageLimits({
+                        refresh: encodeRefreshToken({
+                          refreshToken: result.refreshToken,
+                          clientId: result.clientId,
+                          clientSecret: result.clientSecret,
+                          authMethod: 'idc'
+                        }),
+                        access: result.accessToken,
+                        expires: result.expiresAt,
+                        authMethod: 'idc',
+                        region,
+                        clientId: result.clientId,
+                        clientSecret: result.clientSecret,
+                        email: result.email
+                      });
+                      
+                      accountManager.updateUsage(account.id, {
+                        usedCount: usage.usedCount,
+                        limitCount: usage.limitCount,
+                        realEmail: usage.email
+                      });
+                    } catch (e) {
+                      // Silently continue if usage fetch fails during login
+                    }
+
                     accountManager.addAccount(account);
                     await accountManager.saveToDisk();
                     

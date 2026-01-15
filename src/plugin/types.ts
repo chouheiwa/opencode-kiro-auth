@@ -117,11 +117,59 @@ export interface ParsedResponse {
   outputTokens?: number;
 }
 
-export interface UsageLimits {
+export interface UsageMetadata {
   usedCount: number;
   limitCount: number;
-  contextUsagePercentage?: number;
+  realEmail?: string;
+  lastSync: number;
 }
+
+export interface UsageStorage {
+  version: 1;
+  usage: Record<string, UsageMetadata>;
+}
+
+export interface ManagedAccount {
+  id: string;
+  email: string;
+  realEmail?: string;
+  authMethod: KiroAuthMethod;
+  region: KiroRegion;
+  profileArn?: string;
+  clientId?: string;
+  clientSecret?: string;
+  refreshToken: string;
+  accessToken: string;
+  expiresAt: number;
+  rateLimitResetTime: number;
+  isHealthy: boolean;
+  unhealthyReason?: string;
+  recoveryTime?: number;
+  usedCount?: number;
+  limitCount?: number;
+  lastUsed?: number;
+}
+
+export interface AccountMetadata {
+  id: string;
+  email: string;
+  realEmail?: string;
+  authMethod: KiroAuthMethod;
+  region: KiroRegion;
+  profileArn?: string;
+  clientId?: string;
+  clientSecret?: string;
+  refreshToken: string;
+  accessToken: string;
+  expiresAt: number;
+  rateLimitResetTime: number;
+  isHealthy: boolean;
+  unhealthyReason?: string;
+  recoveryTime?: number;
+  usedCount?: number;
+  limitCount?: number;
+}
+
 
 export interface PreparedRequest {
   url: string;
