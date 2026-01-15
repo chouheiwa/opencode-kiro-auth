@@ -38,7 +38,8 @@ export function transformToCodeWhisperer(
   body: string,
   model: string,
   auth: KiroAuthDetails,
-  thinkingEnabled: boolean = false
+  thinkingEnabled: boolean = false,
+  thinkingBudget: number = 20000
 ): PreparedRequest {
   const openAIRequest: OpenAIRequest = JSON.parse(body);
   const { messages, tools, system: systemPrompt } = openAIRequest;
@@ -52,7 +53,7 @@ export function transformToCodeWhisperer(
 
   let processedSystemPrompt = systemPrompt || '';
   if (thinkingEnabled) {
-    const thinkingPrefix = '<thinking_mode>enabled</thinking_mode><max_thinking_length>20000</max_thinking_length>';
+    const thinkingPrefix = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${thinkingBudget}</max_thinking_length>`;
     if (!processedSystemPrompt) {
       processedSystemPrompt = thinkingPrefix;
     } else if (!processedSystemPrompt.includes('<thinking_mode>')) {
