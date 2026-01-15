@@ -5,8 +5,7 @@ import { refreshAccessToken } from './plugin/token'
 import { transformToCodeWhisperer } from './plugin/request'
 import { parseEventStream } from './plugin/response'
 import { transformKiroStream } from './plugin/streaming'
-import { fetchUsageLimits } from './plugin/usage'
-import { updateAccountQuota } from './plugin/usage'
+import { fetchUsageLimits, updateAccountQuota } from './plugin/usage'
 import { authorizeKiroIDC } from './kiro/oauth-idc'
 import { startIDCAuthServer } from './plugin/server'
 import { KiroTokenRefreshError } from './plugin/errors'
@@ -25,6 +24,10 @@ export const createKiroPlugin =
   (id: string) =>
   async ({ client, directory }: any) => {
     const config = loadConfig(directory)
+    const showToast = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => {
+      client.tui.showToast({ body: { message, variant } }).catch(() => {})
+    }
+
     return {
       auth: {
         provider: id,
@@ -50,19 +53,23 @@ export const createKiroPlugin =
                 const acc = am.getCurrentOrNext()
                 if (!acc) {
                   const w = am.getMinWaitTime() || 60000
+                  showToast(`All accounts rate-limited. Waiting ${Math.ceil(w / 1000)}s...`, 'warning')
                   await sleep(w)
                   continue
                 }
 
-                if (count > 1 && am.shouldShowToast()) client.tui.showToast({ body: { message: `Using ${acc.email}`, variant: 'info' } }).catch(() => {})
+                if (count > 1 && am.shouldShowToast()) showToast(`Using ${acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`, 'info')
 
                 let auth = am.toAuthDetails(acc)
                 if (accessTokenExpired(auth)) {
                   try {
+                    logger.log(`Refreshing token for ${acc.email}`)
                     auth = await refreshAccessToken(auth)
                     am.updateFromAuth(acc, auth)
                     await am.saveToDisk()
-                  } catch (e) {
+                  } catch (e: any) {
+                    const msg = e instanceof KiroTokenRefreshError ? e.message : String(e)
+                    showToast(`Refresh failed for ${acc.email}: ${msg}`, 'error')
                     if (e instanceof KiroTokenRefreshError && e.code === 'invalid_grant') {
                       am.removeAccount(acc)
                       await am.saveToDisk()
@@ -82,7 +89,7 @@ export const createKiroPlugin =
                           updateAccountQuota(acc, u, am)
                           am.saveToDisk()
                         })
-                        .catch(() => {})
+                        .catch((e) => logger.warn(`Usage sync failed for ${acc.email}: ${e.message}`))
                     if (prep.streaming) {
                       const s = transformKiroStream(res, model, prep.conversationId)
                       return new Response(
@@ -119,23 +126,35 @@ export const createKiroPlugin =
                   }
 
                   if (res.status === 401 && retry < config.rate_limit_max_retries) {
+                    logger.warn(`Unauthorized (401) on ${acc.email}, retrying...`)
                     retry++
                     continue
                   }
                   if (res.status === 429) {
-                    am.markRateLimited(acc, 60000)
+                    const wait = parseInt(res.headers.get('retry-after') || '60') * 1000
+                    am.markRateLimited(acc, wait)
                     await am.saveToDisk()
-                    continue
+                    if (count > 1) {
+                      showToast(`Rate limited on ${acc.email}. Switching account...`, 'warning')
+                      continue
+                    } else {
+                      showToast(`Rate limited. Retrying in ${Math.ceil(wait / 1000)}s...`, 'warning')
+                      await sleep(wait)
+                      continue
+                    }
                   }
                   if ((res.status === 402 || res.status === 403) && count > 1) {
-                    am.markUnhealthy(acc, 'Quota')
+                    showToast(`${res.status === 402 ? 'Quota exhausted' : 'Forbidden'} on ${acc.email}. Switching...`, 'warning')
+                    am.markUnhealthy(acc, res.status === 402 ? 'Quota' : 'Forbidden')
                     await am.saveToDisk()
                     continue
                   }
                   throw new Error(`Kiro Error: ${res.status}`)
                 } catch (e) {
                   if (isNetworkError(e) && retry < config.rate_limit_max_retries) {
-                    await sleep(5000 * Math.pow(2, retry))
+                    const delay = 5000 * Math.pow(2, retry)
+                    showToast(`Network error. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
+                    await sleep(delay)
                     retry++
                     continue
                   }
@@ -188,11 +207,15 @@ export const createKiroPlugin =
                           email: res.email
                         })
                         am.updateUsage(acc.id, { usedCount: u.usedCount, limitCount: u.limitCount, realEmail: u.email })
-                      } catch {}
+                      } catch (e: any) {
+                        logger.warn(`Initial usage fetch failed: ${e.message}`)
+                      }
                       am.addAccount(acc)
                       await am.saveToDisk()
+                      showToast(`Successfully logged in as ${res.email}`, 'success')
                       return { type: 'success', key: res.accessToken }
-                    } catch {
+                    } catch (e: any) {
+                      logger.error(`Login failed: ${e.message}`)
                       return { type: 'failed' }
                     }
                   }

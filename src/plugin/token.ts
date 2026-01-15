@@ -7,8 +7,24 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
   const p = decodeRefreshToken(auth.refresh)
   if (!p.clientId || !p.clientSecret) throw new KiroTokenRefreshError('Missing creds', 'MISSING_CREDENTIALS')
 
-  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: p.refreshToken, client_id: p.clientId, client_secret: p.clientSecret })
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+  const requestBody = {
+    refreshToken: p.refreshToken,
+    clientId: p.clientId,
+    clientSecret: p.clientSecret,
+    grantType: 'refresh_token'
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'amz-sdk-request': 'attempt=1; max=1',
+      'x-amzn-kiro-agent-mode': 'vibe',
+      Connection: 'close'
+    },
+    body: JSON.stringify(requestBody)
+  })
 
   if (!res.ok) {
     const txt = await res.text()
@@ -25,7 +41,13 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
   const acc = d.access_token || d.accessToken
   if (!acc) throw new KiroTokenRefreshError('No access token', 'INVALID_RESPONSE')
 
-  const upP: RefreshParts = { refreshToken: d.refresh_token || d.refreshToken || p.refreshToken, clientId: p.clientId, clientSecret: p.clientSecret, authMethod: 'idc' }
+  const upP: RefreshParts = {
+    refreshToken: d.refresh_token || d.refreshToken || p.refreshToken,
+    clientId: p.clientId,
+    clientSecret: p.clientSecret,
+    authMethod: 'idc'
+  }
+
   return {
     refresh: encodeRefreshToken(upP),
     access: acc,
