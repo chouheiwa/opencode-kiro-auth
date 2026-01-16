@@ -6,7 +6,8 @@ export function decodeRefreshToken(refresh: string): RefreshParts {
   if (parts.length < 2) return { refreshToken: parts[0]!, authMethod: 'idc' }
   const refreshToken = parts[0]!
   const authMethod = parts[parts.length - 1]!
-  if (authMethod === 'idc') return { refreshToken, clientId: parts[1], clientSecret: parts[2], authMethod: 'idc' }
+  if (authMethod === 'idc')
+    return { refreshToken, clientId: parts[1], clientSecret: parts[2], authMethod: 'idc' }
   return { refreshToken, authMethod: 'idc' }
 }
 

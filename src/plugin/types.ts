@@ -113,7 +113,7 @@ export interface CodeWhispererRequest {
   conversationState: {
     chatTriggerType: string
     conversationId: string
-    history: CodeWhispererMessage[]
+    history?: CodeWhispererMessage[]
     currentMessage: CodeWhispererMessage
   }
   profileArn?: string

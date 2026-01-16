@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { AccountSelectionStrategySchema, KiroConfigSchema, RegionSchema, DEFAULT_CONFIG, type KiroConfig } from './schema'
+import {
+  AccountSelectionStrategySchema,
+  KiroConfigSchema,
+  RegionSchema,
+  DEFAULT_CONFIG,
+  type KiroConfig
+} from './schema'
 import * as logger from '../logger'
 
 function getConfigDir(): string {
@@ -103,23 +109,45 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
 
     auto_resume: parseBooleanEnv(env.KIRO_AUTO_RESUME, config.auto_resume),
 
-    proactive_token_refresh: parseBooleanEnv(env.KIRO_PROACTIVE_TOKEN_REFRESH, config.proactive_token_refresh),
+    proactive_token_refresh: parseBooleanEnv(
+      env.KIRO_PROACTIVE_TOKEN_REFRESH,
+      config.proactive_token_refresh
+    ),
 
-    token_refresh_interval_seconds: parseNumberEnv(env.KIRO_TOKEN_REFRESH_INTERVAL_SECONDS, config.token_refresh_interval_seconds),
+    token_refresh_interval_seconds: parseNumberEnv(
+      env.KIRO_TOKEN_REFRESH_INTERVAL_SECONDS,
+      config.token_refresh_interval_seconds
+    ),
 
-    token_refresh_buffer_seconds: parseNumberEnv(env.KIRO_TOKEN_REFRESH_BUFFER_SECONDS, config.token_refresh_buffer_seconds),
+    token_refresh_buffer_seconds: parseNumberEnv(
+      env.KIRO_TOKEN_REFRESH_BUFFER_SECONDS,
+      config.token_refresh_buffer_seconds
+    ),
 
     account_selection_strategy: env.KIRO_ACCOUNT_SELECTION_STRATEGY
-      ? AccountSelectionStrategySchema.catch('lowest-usage').parse(env.KIRO_ACCOUNT_SELECTION_STRATEGY)
+      ? AccountSelectionStrategySchema.catch('lowest-usage').parse(
+          env.KIRO_ACCOUNT_SELECTION_STRATEGY
+        )
       : config.account_selection_strategy,
 
-    default_region: env.KIRO_DEFAULT_REGION ? RegionSchema.catch('us-east-1').parse(env.KIRO_DEFAULT_REGION) : config.default_region,
+    default_region: env.KIRO_DEFAULT_REGION
+      ? RegionSchema.catch('us-east-1').parse(env.KIRO_DEFAULT_REGION)
+      : config.default_region,
 
-    rate_limit_retry_delay_ms: parseNumberEnv(env.KIRO_RATE_LIMIT_RETRY_DELAY_MS, config.rate_limit_retry_delay_ms),
+    rate_limit_retry_delay_ms: parseNumberEnv(
+      env.KIRO_RATE_LIMIT_RETRY_DELAY_MS,
+      config.rate_limit_retry_delay_ms
+    ),
 
-    rate_limit_max_retries: parseNumberEnv(env.KIRO_RATE_LIMIT_MAX_RETRIES, config.rate_limit_max_retries),
+    rate_limit_max_retries: parseNumberEnv(
+      env.KIRO_RATE_LIMIT_MAX_RETRIES,
+      config.rate_limit_max_retries
+    ),
 
-    usage_tracking_enabled: parseBooleanEnv(env.KIRO_USAGE_TRACKING_ENABLED, config.usage_tracking_enabled)
+    usage_tracking_enabled: parseBooleanEnv(
+      env.KIRO_USAGE_TRACKING_ENABLED,
+      config.usage_tracking_enabled
+    )
   }
 }
 

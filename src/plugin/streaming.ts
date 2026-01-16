@@ -29,7 +29,11 @@ interface ToolCallState {
 const THINKING_START_TAG = '<thinking>'
 const THINKING_END_TAG = '</thinking>'
 
-export async function* transformKiroStream(response: Response, model: string, conversationId: string): AsyncGenerator<any> {
+export async function* transformKiroStream(
+  response: Response,
+  model: string,
+  conversationId: string
+): AsyncGenerator<any> {
   const thinkingRequested = true
 
   const streamState: StreamState = {
@@ -206,17 +210,22 @@ export async function* transformKiroStream(response: Response, model: string, co
 
     if (thinkingRequested && streamState.buffer) {
       if (streamState.inThinking) {
-        for (const ev of createThinkingDeltaEvents(streamState.buffer, streamState)) yield convertToOpenAI(ev, conversationId, model)
+        for (const ev of createThinkingDeltaEvents(streamState.buffer, streamState))
+          yield convertToOpenAI(ev, conversationId, model)
         streamState.buffer = ''
-        for (const ev of createThinkingDeltaEvents('', streamState)) yield convertToOpenAI(ev, conversationId, model)
-        for (const ev of stopBlock(streamState.thinkingBlockIndex, streamState)) yield convertToOpenAI(ev, conversationId, model)
+        for (const ev of createThinkingDeltaEvents('', streamState))
+          yield convertToOpenAI(ev, conversationId, model)
+        for (const ev of stopBlock(streamState.thinkingBlockIndex, streamState))
+          yield convertToOpenAI(ev, conversationId, model)
       } else {
-        for (const ev of createTextDeltaEvents(streamState.buffer, streamState)) yield convertToOpenAI(ev, conversationId, model)
+        for (const ev of createTextDeltaEvents(streamState.buffer, streamState))
+          yield convertToOpenAI(ev, conversationId, model)
         streamState.buffer = ''
       }
     }
 
-    for (const ev of stopBlock(streamState.textBlockIndex, streamState)) yield convertToOpenAI(ev, conversationId, model)
+    for (const ev of stopBlock(streamState.textBlockIndex, streamState))
+      yield convertToOpenAI(ev, conversationId, model)
 
     const bracketToolCalls = parseBracketToolCalls(totalContent)
     if (bracketToolCalls.length > 0) {
@@ -273,14 +282,18 @@ export async function* transformKiroStream(response: Response, model: string, co
           model
         )
 
-        yield convertToOpenAI({ type: 'content_block_stop', index: blockIndex }, conversationId, model)
+        yield convertToOpenAI(
+          { type: 'content_block_stop', index: blockIndex },
+          conversationId,
+          model
+        )
       }
     }
 
     outputTokens = estimateTokens(totalContent)
 
     if (contextUsagePercentage !== null && contextUsagePercentage > 0) {
-      const totalTokens = Math.round((200000 * contextUsagePercentage) / 100)
+      const totalTokens = Math.round((172500 * contextUsagePercentage) / 100)
       inputTokens = Math.max(0, totalTokens - outputTokens)
     }
 
@@ -385,7 +398,14 @@ function parseStreamBuffer(buffer: string): { events: any[]; remaining: string }
     const stopStart = remaining.indexOf('{"stop":', searchStart)
     const contextUsageStart = remaining.indexOf('{"contextUsagePercentage":', searchStart)
 
-    const candidates = [contentStart, nameStart, followupStart, inputStart, stopStart, contextUsageStart].filter((pos) => pos >= 0)
+    const candidates = [
+      contentStart,
+      nameStart,
+      followupStart,
+      inputStart,
+      stopStart,
+      contextUsageStart
+    ].filter((pos) => pos >= 0)
     if (candidates.length === 0) break
 
     const jsonStart = Math.min(...candidates)

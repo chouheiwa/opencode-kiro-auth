@@ -23,7 +23,10 @@ export interface IDCAuthData {
   region: KiroRegion
 }
 
-export function startIDCAuthServer(authData: IDCAuthData, port: number = 19847): Promise<{ url: string; waitForAuth: () => Promise<KiroIDCTokenResult> }> {
+export function startIDCAuthServer(
+  authData: IDCAuthData,
+  port: number = 19847
+): Promise<{ url: string; waitForAuth: () => Promise<KiroIDCTokenResult> }> {
   return new Promise((resolve, reject) => {
     let server: Server | null = null
     let timeoutId: any = null
@@ -48,17 +51,31 @@ export function startIDCAuthServer(authData: IDCAuthData, port: number = 19847):
           client_id: authData.clientId,
           client_secret: authData.clientSecret
         })
-        const res = await fetch(`https://oidc.${authData.region}.amazonaws.com/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+        const res = await fetch(`https://oidc.${authData.region}.amazonaws.com/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString()
+        })
         const d = await res.json()
         if (res.ok) {
           const acc = d.access_token,
             ref = d.refresh_token,
             exp = Date.now() + d.expires_in * 1000
-          const infoRes = await fetch('https://view.awsapps.com/api/user/info', { headers: { Authorization: `Bearer ${acc}` } })
+          const infoRes = await fetch('https://view.awsapps.com/api/user/info', {
+            headers: { Authorization: `Bearer ${acc}` }
+          })
           const info = await infoRes.json()
           const email = info.email || info.userName || 'builder-id@aws.amazon.com'
           status.status = 'success'
-          if (resolver) resolver({ email, accessToken: acc, refreshToken: ref, expiresAt: exp, clientId: authData.clientId, clientSecret: authData.clientSecret })
+          if (resolver)
+            resolver({
+              email,
+              accessToken: acc,
+              refreshToken: ref,
+              expiresAt: exp,
+              clientId: authData.clientId,
+              clientSecret: authData.clientSecret
+            })
           setTimeout(cleanup, 2000)
         } else if (d.error === 'authorization_pending') setTimeout(poll, authData.interval * 1000)
         else {
@@ -77,7 +94,15 @@ export function startIDCAuthServer(authData: IDCAuthData, port: number = 19847):
 
     server = createServer((req, res) => {
       const u = req.url || ''
-      if (u === '/' || u.startsWith('/?')) sendHtml(res, getIDCAuthHtml(authData.verificationUriComplete, authData.userCode, `http://127.0.0.1:${port}/status`))
+      if (u === '/' || u.startsWith('/?'))
+        sendHtml(
+          res,
+          getIDCAuthHtml(
+            authData.verificationUriComplete,
+            authData.userCode,
+            `http://127.0.0.1:${port}/status`
+          )
+        )
       else if (u === '/status') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(status))

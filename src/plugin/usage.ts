@@ -5,7 +5,12 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${auth.access}`, 'Content-Type': 'application/json', 'x-amzn-kiro-agent-mode': 'vibe', 'amz-sdk-request': 'attempt=1; max=1' }
+      headers: {
+        Authorization: `Bearer ${auth.access}`,
+        'Content-Type': 'application/json',
+        'x-amzn-kiro-agent-mode': 'vibe',
+        'amz-sdk-request': 'attempt=1; max=1'
+      }
     })
     if (!res.ok) throw new Error(`Status: ${res.status}`)
     const data: any = await res.json()
@@ -27,8 +32,16 @@ export async function fetchUsageLimits(auth: KiroAuthDetails): Promise<any> {
   }
 }
 
-export function updateAccountQuota(account: ManagedAccount, usage: any, accountManager?: any): void {
-  const meta = { usedCount: usage.usedCount || 0, limitCount: usage.limitCount || 0, realEmail: usage.email }
+export function updateAccountQuota(
+  account: ManagedAccount,
+  usage: any,
+  accountManager?: any
+): void {
+  const meta = {
+    usedCount: usage.usedCount || 0,
+    limitCount: usage.limitCount || 0,
+    realEmail: usage.email
+  }
   account.usedCount = meta.usedCount
   account.limitCount = meta.limitCount
   if (meta.realEmail) account.realEmail = meta.realEmail

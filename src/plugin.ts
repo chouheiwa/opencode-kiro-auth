@@ -17,7 +17,8 @@ const KIRO_PROVIDER_ID = 'kiro'
 const KIRO_API_PATTERN = /^(https?:\/\/)?q\.[a-z0-9-]+\.amazonaws\.com/
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const isNetworkError = (e: any) => e instanceof Error && /econnreset|etimedout|enotfound|network|fetch failed/i.test(e.message)
+const isNetworkError = (e: any) =>
+  e instanceof Error && /econnreset|etimedout|enotfound|network|fetch failed/i.test(e.message)
 const extractModel = (url: string) => url.match(/models\/([^/:]+)/)?.[1] || null
 
 export const createKiroPlugin =
@@ -36,7 +37,10 @@ export const createKiroPlugin =
           const am = await AccountManager.loadFromDisk(config.account_selection_strategy)
           return {
             apiKey: '',
-            baseURL: KIRO_CONSTANTS.BASE_URL.replace('/generateAssistantResponse', '').replace('{{region}}', config.default_region || 'us-east-1'),
+            baseURL: KIRO_CONSTANTS.BASE_URL.replace('/generateAssistantResponse', '').replace(
+              '{{region}}',
+              config.default_region || 'us-east-1'
+            ),
             async fetch(input: any, init?: any): Promise<Response> {
               const url = typeof input === 'string' ? input : input.url
               if (!KIRO_API_PATTERN.test(url)) return fetch(input, init)
@@ -53,12 +57,19 @@ export const createKiroPlugin =
                 const acc = am.getCurrentOrNext()
                 if (!acc) {
                   const w = am.getMinWaitTime() || 60000
-                  showToast(`All accounts rate-limited. Waiting ${Math.ceil(w / 1000)}s...`, 'warning')
+                  showToast(
+                    `All accounts rate-limited. Waiting ${Math.ceil(w / 1000)}s...`,
+                    'warning'
+                  )
                   await sleep(w)
                   continue
                 }
 
-                if (count > 1 && am.shouldShowToast()) showToast(`Using ${acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`, 'info')
+                if (count > 1 && am.shouldShowToast())
+                  showToast(
+                    `Using ${acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`,
+                    'info'
+                  )
 
                 let auth = am.toAuthDetails(acc)
                 if (accessTokenExpired(auth)) {
@@ -89,14 +100,19 @@ export const createKiroPlugin =
                           updateAccountQuota(acc, u, am)
                           am.saveToDisk()
                         })
-                        .catch((e) => logger.warn(`Usage sync failed for ${acc.email}: ${e.message}`))
+                        .catch((e) =>
+                          logger.warn(`Usage sync failed for ${acc.email}: ${e.message}`)
+                        )
                     if (prep.streaming) {
                       const s = transformKiroStream(res, model, prep.conversationId)
                       return new Response(
                         new ReadableStream({
                           async start(c) {
                             try {
-                              for await (const e of s) c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(e)}\n\n`))
+                              for await (const e of s)
+                                c.enqueue(
+                                  new TextEncoder().encode(`data: ${JSON.stringify(e)}\n\n`)
+                                )
                               c.close()
                             } catch (err) {
                               c.error(err)
@@ -113,16 +129,32 @@ export const createKiroPlugin =
                       object: 'chat.completion',
                       created: Math.floor(Date.now() / 1000),
                       model,
-                      choices: [{ index: 0, message: { role: 'assistant', content: p.content }, finish_reason: p.stopReason === 'tool_use' ? 'tool_calls' : 'stop' }],
-                      usage: { prompt_tokens: p.inputTokens || 0, completion_tokens: p.outputTokens || 0, total_tokens: (p.inputTokens || 0) + (p.outputTokens || 0) }
+                      choices: [
+                        {
+                          index: 0,
+                          message: { role: 'assistant', content: p.content },
+                          finish_reason: p.stopReason === 'tool_use' ? 'tool_calls' : 'stop'
+                        }
+                      ],
+                      usage: {
+                        prompt_tokens: p.inputTokens || 0,
+                        completion_tokens: p.outputTokens || 0,
+                        total_tokens: (p.inputTokens || 0) + (p.outputTokens || 0)
+                      }
                     }
                     if (p.toolCalls.length > 0)
                       oai.choices[0].message.tool_calls = p.toolCalls.map((tc) => ({
                         id: tc.toolUseId,
                         type: 'function',
-                        function: { name: tc.name, arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input) }
+                        function: {
+                          name: tc.name,
+                          arguments:
+                            typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input)
+                        }
                       }))
-                    return new Response(JSON.stringify(oai), { headers: { 'Content-Type': 'application/json' } })
+                    return new Response(JSON.stringify(oai), {
+                      headers: { 'Content-Type': 'application/json' }
+                    })
                   }
 
                   if (res.status === 401 && retry < config.rate_limit_max_retries) {
@@ -138,13 +170,19 @@ export const createKiroPlugin =
                       showToast(`Rate limited on ${acc.email}. Switching account...`, 'warning')
                       continue
                     } else {
-                      showToast(`Rate limited. Retrying in ${Math.ceil(wait / 1000)}s...`, 'warning')
+                      showToast(
+                        `Rate limited. Retrying in ${Math.ceil(wait / 1000)}s...`,
+                        'warning'
+                      )
                       await sleep(wait)
                       continue
                     }
                   }
                   if ((res.status === 402 || res.status === 403) && count > 1) {
-                    showToast(`${res.status === 402 ? 'Quota exhausted' : 'Forbidden'} on ${acc.email}. Switching...`, 'warning')
+                    showToast(
+                      `${res.status === 402 ? 'Quota exhausted' : 'Forbidden'} on ${acc.email}. Switching...`,
+                      'warning'
+                    )
                     am.markUnhealthy(acc, res.status === 402 ? 'Quota' : 'Forbidden')
                     await am.saveToDisk()
                     continue
@@ -153,7 +191,10 @@ export const createKiroPlugin =
                 } catch (e) {
                   if (isNetworkError(e) && retry < config.rate_limit_max_retries) {
                     const delay = 5000 * Math.pow(2, retry)
-                    showToast(`Network error. Retrying in ${Math.ceil(delay / 1000)}s...`, 'warning')
+                    showToast(
+                      `Network error. Retrying in ${Math.ceil(delay / 1000)}s...`,
+                      'warning'
+                    )
                     await sleep(delay)
                     retry++
                     continue
@@ -181,7 +222,9 @@ export const createKiroPlugin =
                   callback: async () => {
                     try {
                       const res = await waitForAuth()
-                      const am = await AccountManager.loadFromDisk(config.account_selection_strategy)
+                      const am = await AccountManager.loadFromDisk(
+                        config.account_selection_strategy
+                      )
                       const acc: ManagedAccount = {
                         id: generateAccountId(),
                         email: res.email,
@@ -197,7 +240,12 @@ export const createKiroPlugin =
                       }
                       try {
                         const u = await fetchUsageLimits({
-                          refresh: encodeRefreshToken({ refreshToken: res.refreshToken, clientId: res.clientId, clientSecret: res.clientSecret, authMethod: 'idc' }),
+                          refresh: encodeRefreshToken({
+                            refreshToken: res.refreshToken,
+                            clientId: res.clientId,
+                            clientSecret: res.clientSecret,
+                            authMethod: 'idc'
+                          }),
                           access: res.accessToken,
                           expires: res.expiresAt,
                           authMethod: 'idc',
@@ -206,7 +254,11 @@ export const createKiroPlugin =
                           clientSecret: res.clientSecret,
                           email: res.email
                         })
-                        am.updateUsage(acc.id, { usedCount: u.usedCount, limitCount: u.limitCount, realEmail: u.email })
+                        am.updateUsage(acc.id, {
+                          usedCount: u.usedCount,
+                          limitCount: u.limitCount,
+                          realEmail: u.email
+                        })
                       } catch (e: any) {
                         logger.warn(`Initial usage fetch failed: ${e.message}`)
                       }

@@ -86,7 +86,7 @@ function parseEventStreamChunk(rawText: string): ParsedResponse {
   })
 
   if (contextUsagePercentage !== undefined) {
-    const totalTokens = Math.round((200000 * contextUsagePercentage) / 100)
+    const totalTokens = Math.round((172500 * contextUsagePercentage) / 100)
     outputTokens = estimateTokens(content)
     inputTokens = Math.max(0, totalTokens - outputTokens)
   }
@@ -113,7 +113,14 @@ function parseAwsEventStreamBuffer(buffer: string): ParsedEvent[] {
     const stopStart = remaining.indexOf('{"stop":', searchStart)
     const contextUsageStart = remaining.indexOf('{"contextUsagePercentage":', searchStart)
 
-    const candidates = [contentStart, nameStart, followupStart, inputStart, stopStart, contextUsageStart].filter((pos) => pos >= 0)
+    const candidates = [
+      contentStart,
+      nameStart,
+      followupStart,
+      inputStart,
+      stopStart,
+      contextUsageStart
+    ].filter((pos) => pos >= 0)
     if (candidates.length === 0) break
 
     const jsonStart = Math.min(...candidates)
@@ -262,7 +269,10 @@ export function cleanToolCallsFromText(text: string, toolCalls: ToolCall[]): str
   for (const tc of toolCalls) {
     const funcName = tc.name
     const escapedName = funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`\\[Called\\s+${escapedName}\\s+with\\s+args:\\s*\\{[^}]*(?:\\{[^}]*\\}[^}]*)*\\}\\]`, 'gs')
+    const pattern = new RegExp(
+      `\\[Called\\s+${escapedName}\\s+with\\s+args:\\s*\\{[^}]*(?:\\{[^}]*\\}[^}]*)*\\}\\]`,
+      'gs'
+    )
     cleaned = cleaned.replace(pattern, '')
   }
 

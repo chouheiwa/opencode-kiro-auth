@@ -1,8 +1,17 @@
 function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }
 
-export function getIDCAuthHtml(verificationUrl: string, userCode: string, statusUrl: string): string {
+export function getIDCAuthHtml(
+  verificationUrl: string,
+  userCode: string,
+  statusUrl: string
+): string {
   const escapedUrl = escapeHtml(verificationUrl)
   const escapedCode = escapeHtml(userCode)
   const escapedStatusUrl = escapeHtml(statusUrl)

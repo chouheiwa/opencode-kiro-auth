@@ -1,6 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { loadAccounts, saveAccounts, loadUsage, saveUsage } from './storage'
-import type { ManagedAccount, AccountMetadata, AccountSelectionStrategy, KiroAuthDetails, RefreshParts, UsageMetadata } from './types'
+import type {
+  ManagedAccount,
+  AccountMetadata,
+  AccountSelectionStrategy,
+  KiroAuthDetails,
+  RefreshParts,
+  UsageMetadata
+} from './types'
 import { KIRO_CONSTANTS } from '../constants'
 import { encodeRefreshToken, decodeRefreshToken } from '../kiro/auth'
 
@@ -15,7 +22,11 @@ export class AccountManager {
   private strategy: AccountSelectionStrategy
   private lastToastTime = 0
 
-  constructor(accounts: ManagedAccount[], usage: Record<string, UsageMetadata>, strategy: AccountSelectionStrategy = 'sticky') {
+  constructor(
+    accounts: ManagedAccount[],
+    usage: Record<string, UsageMetadata>,
+    strategy: AccountSelectionStrategy = 'sticky'
+  ) {
     this.accounts = accounts
     this.usage = usage
     this.cursor = 0
@@ -33,7 +44,10 @@ export class AccountManager {
   static async loadFromDisk(strategy?: AccountSelectionStrategy): Promise<AccountManager> {
     const s = await loadAccounts()
     const u = await loadUsage()
-    const accounts: ManagedAccount[] = s.accounts.map((m) => ({ ...m, region: m.region || KIRO_CONSTANTS.DEFAULT_REGION }))
+    const accounts: ManagedAccount[] = s.accounts.map((m) => ({
+      ...m,
+      region: m.region || KIRO_CONSTANTS.DEFAULT_REGION
+    }))
     return new AccountManager(accounts, u.usage, strategy || 'sticky')
   }
 
@@ -80,7 +94,9 @@ export class AccountManager {
       selected = available[this.cursor % available.length]
       this.cursor = (this.cursor + 1) % available.length
     } else if (this.strategy === 'lowest-usage') {
-      selected = [...available].sort((a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0))[0]
+      selected = [...available].sort(
+        (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
+      )[0]
     }
 
     if (selected) {
@@ -92,7 +108,10 @@ export class AccountManager {
     return null
   }
 
-  updateUsage(id: string, meta: { usedCount: number; limitCount: number; realEmail?: string }): void {
+  updateUsage(
+    id: string,
+    meta: { usedCount: number; limitCount: number; realEmail?: string }
+  ): void {
     const a = this.accounts.find((x) => x.id === id)
     if (a) {
       a.usedCount = meta.usedCount
@@ -143,13 +162,21 @@ export class AccountManager {
   }
 
   async saveToDisk(): Promise<void> {
-    const metadata: AccountMetadata[] = this.accounts.map(({ usedCount, limitCount, lastUsed, ...rest }) => rest)
+    const metadata: AccountMetadata[] = this.accounts.map(
+      ({ usedCount, limitCount, lastUsed, ...rest }) => rest
+    )
     await saveAccounts({ version: 1, accounts: metadata, activeIndex: this.cursor })
     await saveUsage({ version: 1, usage: this.usage })
   }
 
   toAuthDetails(a: ManagedAccount): KiroAuthDetails {
-    const p: RefreshParts = { refreshToken: a.refreshToken, profileArn: a.profileArn, clientId: a.clientId, clientSecret: a.clientSecret, authMethod: a.authMethod }
+    const p: RefreshParts = {
+      refreshToken: a.refreshToken,
+      profileArn: a.profileArn,
+      clientId: a.clientId,
+      clientSecret: a.clientSecret,
+      authMethod: a.authMethod
+    }
     return {
       refresh: encodeRefreshToken(p),
       access: a.accessToken,

@@ -5,7 +5,8 @@ import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
 export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAuthDetails> {
   const url = `https://oidc.${auth.region}.amazonaws.com/token`
   const p = decodeRefreshToken(auth.refresh)
-  if (!p.clientId || !p.clientSecret) throw new KiroTokenRefreshError('Missing creds', 'MISSING_CREDENTIALS')
+  if (!p.clientId || !p.clientSecret)
+    throw new KiroTokenRefreshError('Missing creds', 'MISSING_CREDENTIALS')
 
   const requestBody = {
     refreshToken: p.refreshToken,
@@ -34,7 +35,10 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
     } catch {
       data = { message: txt }
     }
-    throw new KiroTokenRefreshError(`Refresh failed: ${data.message || data.error_description || txt}`, data.error || `HTTP_${res.status}`)
+    throw new KiroTokenRefreshError(
+      `Refresh failed: ${data.message || data.error_description || txt}`,
+      data.error || `HTTP_${res.status}`
+    )
   }
 
   const d = await res.json()

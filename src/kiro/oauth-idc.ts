@@ -75,7 +75,14 @@ export async function authorizeKiroIDC(region?: KiroRegion): Promise<KiroIDCAuth
 
   const deviceAuthData = await deviceAuthResponse.json()
 
-  const { verificationUri, verificationUriComplete, userCode, deviceCode, interval = 5, expiresIn = 600 } = deviceAuthData
+  const {
+    verificationUri,
+    verificationUriComplete,
+    userCode,
+    deviceCode,
+    interval = 5,
+    expiresIn = 600
+  } = deviceAuthData
 
   if (!deviceCode || !userCode || !verificationUri || !verificationUriComplete) {
     throw new Error('Device authorization response missing required fields')
@@ -94,7 +101,14 @@ export async function authorizeKiroIDC(region?: KiroRegion): Promise<KiroIDCAuth
   }
 }
 
-export async function pollKiroIDCToken(clientId: string, clientSecret: string, deviceCode: string, interval: number, expiresIn: number, region: KiroRegion): Promise<KiroIDCTokenResult> {
+export async function pollKiroIDCToken(
+  clientId: string,
+  clientSecret: string,
+  deviceCode: string,
+  interval: number,
+  expiresIn: number,
+  region: KiroRegion
+): Promise<KiroIDCTokenResult> {
   if (!clientId || !clientSecret || !deviceCode) {
     throw new Error('Missing required parameters for token polling')
   }
@@ -171,12 +185,19 @@ export async function pollKiroIDCToken(clientId: string, clientSecret: string, d
         throw new Error(`Token request failed with status: ${tokenResponse.status}`)
       }
     } catch (error) {
-      if (error instanceof Error && (error.message.includes('expired') || error.message.includes('denied') || error.message.includes('failed'))) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('expired') ||
+          error.message.includes('denied') ||
+          error.message.includes('failed'))
+      ) {
         throw error
       }
 
       if (attempts >= maxAttempts) {
-        throw new Error(`Token polling failed after ${attempts} attempts: ${error instanceof Error ? error.message : 'Unknown error'}`)
+        throw new Error(
+          `Token polling failed after ${attempts} attempts: ${error instanceof Error ? error.message : 'Unknown error'}`
+        )
       }
     }
   }
