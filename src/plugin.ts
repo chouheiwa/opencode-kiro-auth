@@ -74,7 +74,7 @@ export const createKiroPlugin =
 
                 if (count > 1 && am.shouldShowToast())
                   showToast(
-                    `Using ${acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`,
+                    `Using ${acc.realEmail || acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`,
                     'info'
                   )
 
@@ -94,13 +94,13 @@ export const createKiroPlugin =
                 let auth = am.toAuthDetails(acc)
                 if (accessTokenExpired(auth)) {
                   try {
-                    logger.log(`Refreshing token for ${acc.email}`)
+                    logger.log(`Refreshing token for ${acc.realEmail || acc.email}`)
                     auth = await refreshAccessToken(auth)
                     am.updateFromAuth(acc, auth)
                     await am.saveToDisk()
                   } catch (e: any) {
                     const msg = e instanceof KiroTokenRefreshError ? e.message : String(e)
-                    showToast(`Refresh failed for ${acc.email}: ${msg}`, 'error')
+                    showToast(`Refresh failed for ${acc.realEmail || acc.email}: ${msg}`, 'error')
                     if (e instanceof KiroTokenRefreshError && e.code === 'invalid_grant') {
                       am.removeAccount(acc)
                       await am.saveToDisk()
@@ -166,7 +166,9 @@ export const createKiroPlugin =
                           am.saveToDisk()
                         })
                         .catch((e) =>
-                          logger.warn(`Usage sync failed for ${acc.email}: ${e.message}`)
+                          logger.warn(
+                            `Usage sync failed for ${acc.realEmail || acc.email}: ${e.message}`
+                          )
                         )
                     if (prep.streaming) {
                       const s = transformKiroStream(res, model, prep.conversationId)
@@ -223,7 +225,7 @@ export const createKiroPlugin =
                   }
 
                   if (res.status === 401 && retry < config.rate_limit_max_retries) {
-                    logger.warn(`Unauthorized (401) on ${acc.email}, retrying...`)
+                    logger.warn(`Unauthorized (401) on ${acc.realEmail || acc.email}, retrying...`)
                     retry++
                     continue
                   }
@@ -232,7 +234,10 @@ export const createKiroPlugin =
                     am.markRateLimited(acc, wait)
                     await am.saveToDisk()
                     if (count > 1) {
-                      showToast(`Rate limited on ${acc.email}. Switching account...`, 'warning')
+                      showToast(
+                        `Rate limited on ${acc.realEmail || acc.email}. Switching account...`,
+                        'warning'
+                      )
                       continue
                     } else {
                       showToast(
@@ -245,7 +250,7 @@ export const createKiroPlugin =
                   }
                   if ((res.status === 402 || res.status === 403) && count > 1) {
                     showToast(
-                      `${res.status === 402 ? 'Quota exhausted' : 'Forbidden'} on ${acc.email}. Switching...`,
+                      `${res.status === 402 ? 'Quota exhausted' : 'Forbidden'} on ${acc.realEmail || acc.email}. Switching...`,
                       'warning'
                     )
                     am.markUnhealthy(acc, res.status === 402 ? 'Quota' : 'Forbidden')
