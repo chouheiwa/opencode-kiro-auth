@@ -97,6 +97,10 @@ export function transformToCodeWhisperer(
       } else uim.content = getContentText(m)
       if (imgs.length) uim.images = imgs
       if (trs.length) uim.userInputMessageContext = { toolResults: deduplicateToolResults(trs) }
+      const prev = history[history.length - 1]
+      if (prev && prev.userInputMessage) {
+        history.push({ assistantResponseMessage: { content: 'Continue' } })
+      }
       history.push({ userInputMessage: uim })
     } else if (m.role === 'tool') {
       const trs: any[] = []
@@ -113,6 +117,10 @@ export function transformToCodeWhisperer(
           status: 'success',
           toolUseId: m.tool_call_id
         })
+      }
+      const prev = history[history.length - 1]
+      if (prev && prev.userInputMessage) {
+        history.push({ assistantResponseMessage: { content: 'Continue' } })
       }
       history.push({
         userInputMessage: {
