@@ -1,4 +1,7 @@
 # OpenCode Kiro Auth Plugin
+[![npm version](https://img.shields.io/npm/v/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
+[![npm downloads](https://img.shields.io/npm/dm/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
+[![license](https://img.shields.io/npm/l/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
 
 OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to the latest Claude 3.5/4.5 models with substantial trial quotas.
 
