@@ -150,27 +150,27 @@ export const createKiroPlugin =
 
                 const apiTimestamp = config.enable_log_api_request ? logger.getTimestamp() : null
 
-                if (config.enable_log_api_request && apiTimestamp) {
-                  let parsedBody: any = null
-                  if (prep.init.body && typeof prep.init.body === 'string') {
-                    try {
-                      parsedBody = JSON.parse(prep.init.body)
-                    } catch (e) {
-                      parsedBody = prep.init.body
-                    }
+                let parsedBody: any = null
+                if (prep.init.body && typeof prep.init.body === 'string') {
+                  try {
+                    parsedBody = JSON.parse(prep.init.body)
+                  } catch (e) {
+                    parsedBody = prep.init.body
                   }
+                }
 
-                  logger.logApiRequest(
-                    {
-                      url: prep.url,
-                      method: prep.init.method,
-                      headers: prep.init.headers,
-                      body: parsedBody,
-                      conversationId: prep.conversationId,
-                      model: prep.effectiveModel
-                    },
-                    apiTimestamp
-                  )
+                const requestData = {
+                  url: prep.url,
+                  method: prep.init.method,
+                  headers: prep.init.headers,
+                  body: parsedBody,
+                  conversationId: prep.conversationId,
+                  model: prep.effectiveModel,
+                  email: acc.realEmail || acc.email
+                }
+
+                if (config.enable_log_api_request && apiTimestamp) {
+                  logger.logApiRequest(requestData, apiTimestamp)
                 }
 
                 try {
@@ -269,7 +269,6 @@ export const createKiroPlugin =
                   }
 
                   if (res.status === 401 && retry < config.rate_limit_max_retries) {
-                    logger.warn(`Unauthorized (401) on ${acc.realEmail || acc.email}, retrying...`)
                     retry++
                     continue
                   }
@@ -302,38 +301,29 @@ export const createKiroPlugin =
                     continue
                   }
 
-                  if (config.enable_log_api_request && apiTimestamp) {
-                    const responseHeaders: Record<string, string> = {}
-                    res.headers.forEach((value, key) => {
-                      responseHeaders[key] = value
-                    })
+                  const responseHeaders: Record<string, string> = {}
+                  res.headers.forEach((value, key) => {
+                    responseHeaders[key] = value
+                  })
 
-                    logger.logApiResponse(
-                      {
-                        status: res.status,
-                        statusText: res.statusText,
-                        headers: responseHeaders,
-                        error: `Kiro Error: ${res.status}`,
-                        conversationId: prep.conversationId,
-                        model: prep.effectiveModel
-                      },
-                      apiTimestamp
-                    )
+                  const responseData = {
+                    status: res.status,
+                    statusText: res.statusText,
+                    headers: responseHeaders,
+                    error: `Kiro Error: ${res.status}`,
+                    conversationId: prep.conversationId,
+                    model: prep.effectiveModel
+                  }
+
+                  if (config.enable_log_api_request && apiTimestamp) {
+                    logger.logApiResponse(responseData, apiTimestamp)
+                  } else {
+                    const errorTimestamp = logger.getTimestamp()
+                    logger.logApiError(requestData, responseData, errorTimestamp)
                   }
 
                   throw new Error(`Kiro Error: ${res.status}`)
                 } catch (e) {
-                  if (config.enable_log_api_request && apiTimestamp) {
-                    logger.logApiResponse(
-                      {
-                        error: String(e),
-                        conversationId: prep.conversationId,
-                        model: prep.effectiveModel
-                      },
-                      apiTimestamp
-                    )
-                  }
-
                   if (isNetworkError(e) && retry < config.rate_limit_max_retries) {
                     const delay = 5000 * Math.pow(2, retry)
                     showToast(
@@ -344,6 +334,20 @@ export const createKiroPlugin =
                     retry++
                     continue
                   }
+
+                  const networkErrorData = {
+                    error: String(e),
+                    conversationId: prep.conversationId,
+                    model: prep.effectiveModel
+                  }
+
+                  if (config.enable_log_api_request && apiTimestamp) {
+                    logger.logApiResponse(networkErrorData, apiTimestamp)
+                  } else {
+                    const errorTimestamp = logger.getTimestamp()
+                    logger.logApiError(requestData, networkErrorData, errorTimestamp)
+                  }
+
                   throw e
                 }
               }

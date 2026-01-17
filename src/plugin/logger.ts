@@ -22,11 +22,17 @@ const writeToFile = (level: string, message: string, ...args: unknown[]) => {
   } catch (e) {}
 }
 
-const writeApiLog = (type: 'request' | 'response', data: any, timestamp: string) => {
+const writeApiLog = (
+  type: 'request' | 'response',
+  data: any,
+  timestamp: string,
+  isError = false
+) => {
   try {
     const dir = getLogDir()
     mkdirSync(dir, { recursive: true })
-    const filename = `${timestamp}_${type}.json`
+    const prefix = isError ? 'error_' : ''
+    const filename = `${prefix}${timestamp}_${type}.json`
     const path = join(dir, filename)
     const content = JSON.stringify(data, null, 2)
     writeFileSync(path, content)
@@ -57,6 +63,14 @@ export function logApiRequest(data: any, timestamp: string): void {
 
 export function logApiResponse(data: any, timestamp: string): void {
   writeApiLog('response', data, timestamp)
+}
+
+export function logApiError(requestData: any, responseData: any, timestamp: string): void {
+  writeApiLog('request', requestData, timestamp, true)
+  writeApiLog('response', responseData, timestamp, true)
+  const errorType = responseData.status ? `HTTP ${responseData.status}` : 'Network Error'
+  const email = requestData.email || 'unknown'
+  error(`${errorType} on ${email} - See error_${timestamp}_request.json`)
 }
 
 export function getTimestamp(): string {
