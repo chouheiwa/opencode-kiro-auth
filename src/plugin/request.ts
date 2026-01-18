@@ -23,19 +23,27 @@ function sanitizeHistory(history: CodeWhispererMessage[]): CodeWhispererMessage[
     if (!m) continue
     if (m.assistantResponseMessage?.toolUses) {
       const next = history[i + 1]
-      if (next?.userInputMessage?.userInputMessageContext?.toolResults) {
-        result.push(m)
-      }
+      if (next?.userInputMessage?.userInputMessageContext?.toolResults) result.push(m)
     } else if (m.userInputMessage?.userInputMessageContext?.toolResults) {
       const prev = result[result.length - 1]
-      if (prev?.assistantResponseMessage?.toolUses) {
-        result.push(m)
-      }
-    } else {
-      result.push(m)
-    }
+      if (prev?.assistantResponseMessage?.toolUses) result.push(m)
+    } else result.push(m)
   }
   return result
+}
+
+function findOriginalToolCall(msgs: any[], toolUseId: string): any | null {
+  for (const m of msgs) {
+    if (m.role === 'assistant') {
+      if (m.tool_calls) {
+        for (const tc of m.tool_calls) if (tc.id === toolUseId) return tc
+      }
+      if (Array.isArray(m.content)) {
+        for (const p of m.content) if (p.type === 'tool_use' && p.id === toolUseId) return p
+      }
+    }
+  }
+  return null
 }
 
 export function transformToCodeWhisperer(
@@ -275,12 +283,61 @@ export function transformToCodeWhisperer(
       }
     }
   }
+
+  const toolUsesInHistory = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
+  const allToolUseIdsInHistory = new Set(toolUsesInHistory.map((tu) => tu.toolUseId))
+  const finalCurTrs: any[] = []
+  const orphanedTrs: any[] = []
+
+  for (const tr of curTrs) {
+    if (allToolUseIdsInHistory.has(tr.toolUseId)) {
+      finalCurTrs.push(tr)
+    } else {
+      const originalCall = findOriginalToolCall(messages, tr.toolUseId)
+      if (originalCall) {
+        orphanedTrs.push({
+          call: {
+            name: originalCall.name || originalCall.function?.name || 'tool',
+            toolUseId: tr.toolUseId,
+            input:
+              originalCall.input ||
+              (originalCall.function?.arguments ? JSON.parse(originalCall.function.arguments) : {})
+          },
+          result: tr
+        })
+      } else {
+        curContent += `\n\n[Output for tool call ${tr.toolUseId}]:\n${tr.content?.[0]?.text || ''}`
+      }
+    }
+  }
+
+  if (orphanedTrs.length > 0) {
+    const prev = history[history.length - 1]
+    if (prev && !prev.userInputMessage) {
+      history.push({
+        userInputMessage: {
+          content: 'Running tools...',
+          modelId: resolved,
+          origin: KIRO_CONSTANTS.ORIGIN_AI_EDITOR
+        }
+      })
+    }
+    history.push({
+      assistantResponseMessage: {
+        content: 'I will execute the following tools.',
+        toolUses: orphanedTrs.map((o) => o.call)
+      }
+    })
+    finalCurTrs.push(...orphanedTrs.map((o) => o.result))
+  }
+
   if (history.length > 0) (request.conversationState as any).history = history
   const uim = request.conversationState.currentMessage.userInputMessage
   if (uim) {
+    uim.content = curContent
     if (curImgs.length) uim.images = curImgs
     const ctx: any = {}
-    if (curTrs.length) ctx.toolResults = deduplicateToolResults(curTrs)
+    if (finalCurTrs.length) ctx.toolResults = deduplicateToolResults(finalCurTrs)
     if (cwTools.length) ctx.tools = cwTools
     if (Object.keys(ctx).length) uim.userInputMessageContext = ctx
     const hasToolsInHistory = historyHasToolCalling(history)
