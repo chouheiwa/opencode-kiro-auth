@@ -3,7 +3,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
 [![license](https://img.shields.io/npm/l/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
 
-OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to the latest Claude 3.5/4.5 models with substantial trial quotas.
+OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude Sonnet and Haiku models with substantial trial quotas.
 
 ## Features
 
@@ -26,30 +26,15 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
   "provider": {
     "kiro": {
       "models": {
-        "claude-opus-4-5": {
-          "name": "Claude Opus 4.5",
-          "limit": { "context": 200000, "output": 64000 },
-          "modalities": { "input": ["text", "image"], "output": ["text"] }
-        },
-        "claude-opus-4-5-thinking": {
-          "name": "Claude Opus 4.5 Thinking",
-          "limit": { "context": 200000, "output": 64000 },
-          "modalities": { "input": ["text", "image"], "output": ["text"] },
-          "variants": {
-            "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
-            "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
-          }
-        },
         "claude-sonnet-4-5": {
           "name": "Claude Sonnet 4.5",
           "limit": { "context": 200000, "output": 64000 },
-          "modalities": { "input": ["text", "image"], "output": ["text"] }
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "claude-sonnet-4-5-thinking": {
           "name": "Claude Sonnet 4.5 Thinking",
           "limit": { "context": 200000, "output": 64000 },
-          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
             "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },

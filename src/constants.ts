@@ -47,9 +47,6 @@ export const KIRO_CONSTANTS = {
 }
 
 export const MODEL_MAPPING: Record<string, string> = {
-  'claude-opus-4-5': 'claude-opus-4.5',
-  'claude-opus-4-5-thinking': 'claude-opus-4.5',
-  'claude-opus-4-5-20251101': 'claude-opus-4.5',
   'claude-haiku-4-5': 'claude-haiku-4.5',
   'claude-sonnet-4-5': 'CLAUDE_SONNET_4_5_20250929_V1_0',
   'claude-sonnet-4-5-thinking': 'CLAUDE_SONNET_4_5_20250929_V1_0',

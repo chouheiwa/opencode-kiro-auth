@@ -69,7 +69,7 @@ export const createKiroPlugin =
               if (!KIRO_API_PATTERN.test(url)) return fetch(input, init)
 
               const body = init?.body ? JSON.parse(init.body) : {}
-              const model = extractModel(url) || body.model || 'claude-opus-4-5'
+              const model = extractModel(url) || body.model || 'claude-sonnet-4-5'
               const think = model.endsWith('-thinking') || !!body.providerOptions?.thinkingConfig
               const budget = body.providerOptions?.thinkingConfig?.thinkingBudget || 20000
 
