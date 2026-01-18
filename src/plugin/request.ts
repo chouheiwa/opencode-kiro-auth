@@ -8,7 +8,6 @@ import type {
 } from './types'
 import { KIRO_CONSTANTS } from '../constants.js'
 import { resolveKiroModel } from './models.js'
-import * as logger from './logger.js'
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s
@@ -283,16 +282,13 @@ export function transformToCodeWhisperer(
       }
     }
   }
-
   const toolUsesInHistory = history.flatMap((h) => h.assistantResponseMessage?.toolUses || [])
   const allToolUseIdsInHistory = new Set(toolUsesInHistory.map((tu) => tu.toolUseId))
   const finalCurTrs: any[] = []
   const orphanedTrs: any[] = []
-
   for (const tr of curTrs) {
-    if (allToolUseIdsInHistory.has(tr.toolUseId)) {
-      finalCurTrs.push(tr)
-    } else {
+    if (allToolUseIdsInHistory.has(tr.toolUseId)) finalCurTrs.push(tr)
+    else {
       const originalCall = findOriginalToolCall(messages, tr.toolUseId)
       if (originalCall) {
         orphanedTrs.push({
@@ -310,7 +306,6 @@ export function transformToCodeWhisperer(
       }
     }
   }
-
   if (orphanedTrs.length > 0) {
     const prev = history[history.length - 1]
     if (prev && !prev.userInputMessage) {
@@ -330,7 +325,6 @@ export function transformToCodeWhisperer(
     })
     finalCurTrs.push(...orphanedTrs.map((o) => o.result))
   }
-
   if (history.length > 0) (request.conversationState as any).history = history
   const uim = request.conversationState.currentMessage.userInputMessage
   if (uim) {
@@ -413,7 +407,6 @@ export function mergeAdjacentMessages(msgs: any[]): any[] {
           last.content.push({ type: 'text', text: m.content })
         else if (typeof last.content === 'string' && Array.isArray(m.content))
           last.content = [{ type: 'text', text: last.content }, ...m.content]
-
         if (m.tool_calls) {
           if (!last.tool_calls) last.tool_calls = []
           last.tool_calls.push(...m.tool_calls)
