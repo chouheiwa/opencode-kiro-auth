@@ -333,10 +333,13 @@ export const createKiroPlugin =
                   const existingAm = await AccountManager.loadFromDisk(
                     config.account_selection_strategy
                   )
-                  if (existingAm.getAccountCount() > 0) {
-                    const existingAccounts = existingAm
-                      .getAccounts()
-                      .map((acc, idx) => ({ email: acc.realEmail || acc.email, index: idx }))
+                  const allAccounts = existingAm.getAccounts()
+                  const idcAccounts = allAccounts.filter((a) => a.authMethod === 'idc')
+                  if (idcAccounts.length > 0) {
+                    const existingAccounts = idcAccounts.map((acc, idx) => ({
+                      email: acc.realEmail || acc.email,
+                      index: idx
+                    }))
                     startFresh = (await promptLoginMode(existingAccounts)) === 'fresh'
                   }
                   while (true) {
@@ -354,7 +357,9 @@ export const createKiroPlugin =
                         config.account_selection_strategy
                       )
                       if (accounts.length === 1 && startFresh)
-                        am.getAccounts().forEach((a) => am.removeAccount(a))
+                        am.getAccounts()
+                          .filter((a) => a.authMethod === 'idc')
+                          .forEach((a) => am.removeAccount(a))
                       const acc: ManagedAccount = {
                         id: generateAccountId(),
                         email: res.email,
@@ -458,44 +463,6 @@ export const createKiroPlugin =
                   })
                 }
               })
-          },
-          {
-            id: 'desktop',
-            label: 'Kiro Desktop (Personal)',
-            type: 'api',
-            authorize: async (inputs: any) => {
-              const token = inputs.apiKey
-              if (!token) return { type: 'failed' }
-              const am = await AccountManager.loadFromDisk(config.account_selection_strategy)
-              const acc: ManagedAccount = {
-                id: generateAccountId(),
-                email: 'desktop-user@kiro.dev',
-                authMethod: 'desktop',
-                region: config.default_region,
-                refreshToken: token,
-                accessToken: '',
-                expiresAt: 0,
-                rateLimitResetTime: 0,
-                isHealthy: true
-              }
-              try {
-                const auth = am.toAuthDetails(acc)
-                const newAuth = await refreshAccessToken(auth)
-                am.updateFromAuth(acc, newAuth)
-                const u = await fetchUsageLimits(newAuth)
-                am.updateUsage(acc.id, {
-                  usedCount: u.usedCount,
-                  limitCount: u.limitCount,
-                  realEmail: u.email
-                })
-                am.addAccount(acc)
-                await am.saveToDisk()
-                return { type: 'success', key: acc.accessToken }
-              } catch (e: any) {
-                showToast(`Failed: ${e.message}`, 'error')
-                return { type: 'failed' }
-              }
-            }
           }
         ]
       }
