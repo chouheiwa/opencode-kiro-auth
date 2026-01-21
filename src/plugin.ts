@@ -1,9 +1,9 @@
 import { exec } from 'node:child_process'
 import { KIRO_CONSTANTS } from './constants'
-import { accessTokenExpired, encodeRefreshToken } from './kiro/auth'
+import { accessTokenExpired } from './kiro/auth'
 import type { KiroIDCTokenResult } from './kiro/oauth-idc'
 import { authorizeKiroIDC } from './kiro/oauth-idc'
-import { AccountManager, generateAccountId } from './plugin/accounts'
+import { AccountManager, createDeterministicAccountId } from './plugin/accounts'
 import { promptAddAnotherAccount, promptLoginMode } from './plugin/cli'
 import { loadConfig } from './plugin/config'
 import { KiroTokenRefreshError } from './plugin/errors'
@@ -59,6 +59,21 @@ export const createKiroPlugin =
           await migrateJsonToSqlite()
           if (config.auto_sync_kiro_cli) await syncFromKiroCli()
           const am = await AccountManager.loadFromDisk(config.account_selection_strategy)
+          const allAccs = am.getAccounts()
+          for (const acc of allAccs) {
+            if (acc.isHealthy && (!acc.lastSync || Date.now() - acc.lastSync > 3600000)) {
+              try {
+                const auth = am.toAuthDetails(acc)
+                const u = await fetchUsageLimits(auth)
+                am.updateUsage(acc.id, {
+                  usedCount: u.usedCount,
+                  limitCount: u.limitCount,
+                  email: u.email
+                })
+              } catch {}
+            }
+          }
+          await am.saveToDisk()
           return {
             apiKey: '',
             baseURL: KIRO_CONSTANTS.BASE_URL.replace('/generateAssistantResponse', '').replace(
@@ -85,7 +100,7 @@ export const createKiroPlugin =
                 if (Date.now() - startTime > timeoutMs) throw new Error('Request timeout')
                 const count = am.getAccountCount()
                 if (count === 0) throw new Error('No accounts')
-                const acc = am.getCurrentOrNext()
+                let acc = am.getCurrentOrNext()
                 if (!acc) {
                   const wait = am.getMinWaitTime()
                   if (wait > 0 && wait < 30000) {
@@ -101,7 +116,7 @@ export const createKiroPlugin =
                 }
                 if (count > 1 && am.shouldShowToast())
                   showToast(
-                    `Using ${acc.realEmail || acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`,
+                    `Using ${acc.email} (${am.getAccounts().indexOf(acc) + 1}/${count})`,
                     'info'
                   )
                 if (
@@ -111,7 +126,7 @@ export const createKiroPlugin =
                 ) {
                   const p = acc.limitCount > 0 ? (acc.usedCount / acc.limitCount) * 100 : 0
                   showToast(
-                    formatUsageMessage(acc.usedCount, acc.limitCount, acc.realEmail || acc.email),
+                    formatUsageMessage(acc.usedCount, acc.limitCount, acc.email),
                     p >= 80 ? 'warning' : 'info'
                   )
                 }
@@ -126,7 +141,7 @@ export const createKiroPlugin =
                     const refreshedAm = await AccountManager.loadFromDisk(
                       config.account_selection_strategy
                     )
-                    const stillAcc = refreshedAm.getAccounts().find((a) => a.id === acc.id)
+                    const stillAcc = refreshedAm.getAccounts().find((a) => a.id === acc!.id)
                     if (
                       stillAcc &&
                       !accessTokenExpired(
@@ -135,6 +150,7 @@ export const createKiroPlugin =
                       )
                     ) {
                       showToast('Credentials recovered from Kiro CLI sync.', 'info')
+                      acc = stillAcc
                       continue
                     }
                     if (
@@ -156,19 +172,19 @@ export const createKiroPlugin =
                 let prep = prepRequest(reductionFactor)
                 const apiTimestamp = config.enable_log_api_request ? logger.getTimestamp() : null
                 if (config.enable_log_api_request && apiTimestamp) {
-                  let parsedBody = null
+                  let b = null
                   try {
-                    parsedBody = prep.init.body ? JSON.parse(prep.init.body as string) : null
+                    b = prep.init.body ? JSON.parse(prep.init.body as string) : null
                   } catch {}
                   logger.logApiRequest(
                     {
                       url: prep.url,
                       method: prep.init.method,
                       headers: prep.init.headers,
-                      body: parsedBody,
+                      body: b,
                       conversationId: prep.conversationId,
                       model: prep.effectiveModel,
-                      email: acc.realEmail || acc.email
+                      email: acc.email
                     },
                     apiTimestamp
                   )
@@ -196,7 +212,7 @@ export const createKiroPlugin =
                       const sync = async (att = 0): Promise<void> => {
                         try {
                           const u = await fetchUsageLimits(auth)
-                          updateAccountQuota(acc, u, am)
+                          updateAccountQuota(acc!, u, am)
                           await am.saveToDisk()
                         } catch (e: any) {
                           if (att < config.usage_sync_max_retries) {
@@ -302,9 +318,9 @@ export const createKiroPlugin =
                     conversationId: prep.conversationId,
                     model: prep.effectiveModel
                   }
-                  let lastBody = null
+                  let lastB = null
                   try {
-                    lastBody = prep.init.body ? JSON.parse(prep.init.body as string) : null
+                    lastB = prep.init.body ? JSON.parse(prep.init.body as string) : null
                   } catch {}
                   if (!config.enable_log_api_request)
                     logger.logApiError(
@@ -312,10 +328,10 @@ export const createKiroPlugin =
                         url: prep.url,
                         method: prep.init.method,
                         headers: prep.init.headers,
-                        body: lastBody,
+                        body: lastB,
                         conversationId: prep.conversationId,
                         model: prep.effectiveModel,
-                        email: acc.realEmail || acc.email
+                        email: acc.email
                       },
                       rData,
                       logger.getTimestamp()
@@ -352,7 +368,7 @@ export const createKiroPlugin =
                   const idcAccs = existingAm.getAccounts().filter((a) => a.authMethod === 'idc')
                   if (idcAccs.length > 0) {
                     const existingAccounts = idcAccs.map((acc, idx) => ({
-                      email: acc.realEmail || acc.email,
+                      email: acc.email,
                       index: idx
                     }))
                     startFresh = (await promptLoginMode(existingAccounts)) === 'fresh'
@@ -367,6 +383,19 @@ export const createKiroPlugin =
                       )
                       openBrowser(url)
                       const res = await waitForAuth()
+                      const u = await fetchUsageLimits({
+                        refresh: '',
+                        access: res.accessToken,
+                        expires: res.expiresAt,
+                        authMethod: 'idc',
+                        region,
+                        clientId: res.clientId,
+                        clientSecret: res.clientSecret
+                      })
+                      if (!u.email) {
+                        console.log('\n[Error] Failed to fetch account email. Skipping...\n')
+                        continue
+                      }
                       accounts.push(res as KiroIDCTokenResult)
                       const am = await AccountManager.loadFromDisk(
                         config.account_selection_strategy
@@ -375,9 +404,10 @@ export const createKiroPlugin =
                         am.getAccounts()
                           .filter((a) => a.authMethod === 'idc')
                           .forEach((a) => am.removeAccount(a))
+                      const id = createDeterministicAccountId(u.email, 'idc', res.clientId)
                       const acc: ManagedAccount = {
-                        id: generateAccountId(),
-                        email: res.email,
+                        id,
+                        email: u.email,
                         authMethod: 'idc',
                         region,
                         clientId: res.clientId,
@@ -386,36 +416,18 @@ export const createKiroPlugin =
                         accessToken: res.accessToken,
                         expiresAt: res.expiresAt,
                         rateLimitResetTime: 0,
-                        isHealthy: true
+                        isHealthy: true,
+                        failCount: 0
                       }
-                      try {
-                        const u = await fetchUsageLimits({
-                          refresh: encodeRefreshToken({
-                            refreshToken: res.refreshToken,
-                            clientId: res.clientId,
-                            clientSecret: res.clientSecret,
-                            authMethod: 'idc'
-                          }),
-                          access: res.accessToken,
-                          expires: res.expiresAt,
-                          authMethod: 'idc',
-                          region,
-                          clientId: res.clientId,
-                          clientSecret: res.clientSecret,
-                          email: res.email
-                        })
-                        am.updateUsage(acc.id, {
-                          usedCount: u.usedCount,
-                          limitCount: u.limitCount,
-                          realEmail: u.email
-                        })
-                      } catch {}
                       am.addAccount(acc)
+                      am.updateUsage(id, { usedCount: u.usedCount, limitCount: u.limitCount })
                       await am.saveToDisk()
-                      showToast(`Account authenticated (${res.email})`, 'success')
+                      console.log(
+                        `\n[Success] Added: ${u.email} (Quota: ${u.usedCount}/${u.limitCount})\n`
+                      )
                       if (!(await promptAddAnotherAccount(am.getAccountCount()))) break
                     } catch (e: any) {
-                      showToast(`Failed: ${e.message}`, 'error')
+                      console.log(`\n[Error] Login failed: ${e.message}\n`)
                       break
                     }
                   }
@@ -448,9 +460,20 @@ export const createKiroPlugin =
                       try {
                         const res = await waitForAuth(),
                           am = await AccountManager.loadFromDisk(config.account_selection_strategy)
+                        const u = await fetchUsageLimits({
+                          refresh: '',
+                          access: res.accessToken,
+                          expires: res.expiresAt,
+                          authMethod: 'idc',
+                          region,
+                          clientId: res.clientId,
+                          clientSecret: res.clientSecret
+                        })
+                        if (!u.email) throw new Error('No email')
+                        const id = createDeterministicAccountId(u.email, 'idc', res.clientId)
                         const acc: ManagedAccount = {
-                          id: generateAccountId(),
-                          email: res.email,
+                          id,
+                          email: u.email,
                           authMethod: 'idc',
                           region,
                           clientId: res.clientId,
@@ -459,9 +482,12 @@ export const createKiroPlugin =
                           accessToken: res.accessToken,
                           expiresAt: res.expiresAt,
                           rateLimitResetTime: 0,
-                          isHealthy: true
+                          isHealthy: true,
+                          failCount: 0
                         }
                         am.addAccount(acc)
+                        if (u.email)
+                          am.updateUsage(id, { usedCount: u.usedCount, limitCount: u.limitCount })
                         await am.saveToDisk()
                         return { type: 'success', key: res.accessToken }
                       } catch (e: any) {

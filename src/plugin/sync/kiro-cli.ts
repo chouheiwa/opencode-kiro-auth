@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { createDeterministicAccountId } from '../accounts'
 import * as logger from '../logger'
 import { kiroDb } from '../storage/sqlite'
+import { fetchUsageLimits } from '../usage'
 
 function getCliDbPath(): string {
   const p = platform()
@@ -35,8 +36,8 @@ export async function syncFromKiroCli() {
           continue
         }
         if (!data.access_token) continue
-        const email = data.email || 'cli-account@kiro.dev'
         const authMethod = row.key.includes('odic') ? 'idc' : 'desktop'
+        const region = data.region || 'us-east-1'
         const clientId =
           data.client_id ||
           (authMethod === 'idc'
@@ -49,24 +50,40 @@ export async function syncFromKiroCli() {
             ? JSON.parse(rows.find((r) => r.key.includes('device-registration'))?.value || '{}')
                 .client_secret
             : undefined)
-        const id = createDeterministicAccountId(email, authMethod, clientId, data.profile_arn)
-        const existing = kiroDb.getAccounts().find((a) => a.id === id)
-        const cliExpiresAt = data.expires_at ? new Date(data.expires_at).getTime() : 0
-        if (existing && existing.is_healthy === 1 && existing.expires_at >= cliExpiresAt) continue
-        kiroDb.upsertAccount({
-          id,
-          email,
-          realEmail: data.real_email || email,
-          authMethod,
-          region: data.region || 'us-east-1',
-          clientId,
-          clientSecret,
-          profileArn: data.profile_arn,
-          refreshToken: data.refresh_token,
-          accessToken: data.access_token,
-          expiresAt: cliExpiresAt || Date.now() + 3600000,
-          isHealthy: 1
-        })
+        try {
+          const u = await fetchUsageLimits({
+            refresh: '',
+            access: data.access_token,
+            expires: 0,
+            authMethod,
+            region,
+            clientId,
+            clientSecret
+          })
+          const email = u.email
+          if (!email) continue
+          const id = createDeterministicAccountId(email, authMethod, clientId, data.profile_arn)
+          const existing = kiroDb.getAccounts().find((a) => a.id === id)
+          const cliExpiresAt = data.expires_at ? new Date(data.expires_at).getTime() : 0
+          if (existing && existing.is_healthy === 1 && existing.expires_at >= cliExpiresAt) continue
+          kiroDb.upsertAccount({
+            id,
+            email,
+            authMethod,
+            region,
+            clientId,
+            clientSecret,
+            profileArn: data.profile_arn,
+            refreshToken: data.refresh_token,
+            accessToken: data.access_token,
+            expiresAt: cliExpiresAt || Date.now() + 3600000,
+            isHealthy: 1,
+            failCount: 0,
+            usedCount: u.usedCount,
+            limitCount: u.limitCount,
+            lastSync: Date.now()
+          })
+        } catch {}
       }
     }
     cliDb.close()

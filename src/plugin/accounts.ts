@@ -6,8 +6,7 @@ import type {
   AccountSelectionStrategy,
   KiroAuthDetails,
   ManagedAccount,
-  RefreshParts,
-  UsageMetadata
+  RefreshParts
 } from './types'
 
 export function generateAccountId(): string {
@@ -27,36 +26,20 @@ export function createDeterministicAccountId(
 
 export class AccountManager {
   private accounts: ManagedAccount[]
-  private usage: Record<string, UsageMetadata>
   private cursor: number
   private strategy: AccountSelectionStrategy
   private lastToastTime = 0
   private lastUsageToastTime = 0
-  constructor(
-    accounts: ManagedAccount[],
-    usage: Record<string, UsageMetadata>,
-    strategy: AccountSelectionStrategy = 'sticky'
-  ) {
+  constructor(accounts: ManagedAccount[], strategy: AccountSelectionStrategy = 'sticky') {
     this.accounts = accounts
-    this.usage = usage
     this.cursor = 0
     this.strategy = strategy
-    for (const a of this.accounts) {
-      const m = this.usage[a.id]
-      if (m) {
-        a.usedCount = m.usedCount
-        a.limitCount = m.limitCount
-        a.realEmail = m.realEmail
-      }
-    }
   }
   static async loadFromDisk(strategy?: AccountSelectionStrategy): Promise<AccountManager> {
     const rows = kiroDb.getAccounts()
-    const usage = kiroDb.getUsage()
     const accounts: ManagedAccount[] = rows.map((r: any) => ({
       id: r.id,
       email: r.email,
-      realEmail: r.real_email,
       authMethod: r.auth_method as any,
       region: r.region as any,
       clientId: r.client_id,
@@ -69,9 +52,12 @@ export class AccountManager {
       isHealthy: r.is_healthy === 1,
       unhealthyReason: r.unhealthy_reason,
       recoveryTime: r.recovery_time,
-      lastUsed: r.last_used
+      failCount: r.fail_count || 0,
+      lastUsed: r.last_used,
+      usedCount: r.used_count,
+      limitCount: r.limit_count
     }))
-    return new AccountManager(accounts, usage, strategy || 'sticky')
+    return new AccountManager(accounts, strategy || 'sticky')
   }
   getAccountCount(): number {
     return this.accounts.length
@@ -98,7 +84,7 @@ export class AccountManager {
     const now = Date.now()
     const available = this.accounts.filter((a) => {
       if (!a.isHealthy) {
-        if (a.recoveryTime && now >= a.recoveryTime) {
+        if (a.failCount < 3 && a.recoveryTime && now >= a.recoveryTime) {
           a.isHealthy = true
           delete a.unhealthyReason
           delete a.recoveryTime
@@ -123,7 +109,7 @@ export class AccountManager {
     }
     if (!selected) {
       const fallback = this.accounts
-        .filter((a) => !a.isHealthy)
+        .filter((a) => !a.isHealthy && a.failCount < 3)
         .sort(
           (a, b) => (a.usedCount || 0) - (b.usedCount || 0) || (a.lastUsed || 0) - (b.lastUsed || 0)
         )[0]
@@ -142,18 +128,15 @@ export class AccountManager {
     }
     return null
   }
-  updateUsage(
-    id: string,
-    meta: { usedCount: number; limitCount: number; realEmail?: string }
-  ): void {
+  updateUsage(id: string, meta: { usedCount: number; limitCount: number; email?: string }): void {
     const a = this.accounts.find((x) => x.id === id)
     if (a) {
       a.usedCount = meta.usedCount
       a.limitCount = meta.limitCount
-      if (meta.realEmail) a.realEmail = meta.realEmail
+      if (meta.email) a.email = meta.email
+      a.failCount = 0
+      kiroDb.upsertAccount(a)
     }
-    this.usage[id] = { ...meta, lastSync: Date.now() }
-    kiroDb.upsertUsage(id, this.usage[id])
   }
   addAccount(a: ManagedAccount): void {
     const i = this.accounts.findIndex((x) => x.id === a.id)
@@ -165,7 +148,6 @@ export class AccountManager {
     const removedIndex = this.accounts.findIndex((x) => x.id === a.id)
     if (removedIndex === -1) return
     this.accounts = this.accounts.filter((x) => x.id !== a.id)
-    delete this.usage[a.id]
     kiroDb.deleteAccount(a.id)
     if (this.accounts.length === 0) this.cursor = 0
     else if (this.cursor >= this.accounts.length) this.cursor = this.accounts.length - 1
@@ -177,11 +159,12 @@ export class AccountManager {
       acc.accessToken = auth.access
       acc.expiresAt = auth.expires
       acc.lastUsed = Date.now()
-      if (auth.email && auth.email !== 'builder-id@aws.amazon.com') acc.realEmail = auth.email
+      if (auth.email) acc.email = auth.email
       const p = decodeRefreshToken(auth.refresh)
       acc.refreshToken = p.refreshToken
       if (p.profileArn) acc.profileArn = p.profileArn
       if (p.clientId) acc.clientId = p.clientId
+      acc.failCount = 0
       kiroDb.upsertAccount(acc)
       writeToKiroCli(acc).catch(() => {})
     }
@@ -198,7 +181,8 @@ export class AccountManager {
     if (acc) {
       acc.isHealthy = false
       acc.unhealthyReason = reason
-      acc.recoveryTime = recovery || Date.now() + 3600000
+      acc.failCount = (acc.failCount || 0) + 1
+      acc.recoveryTime = acc.failCount >= 3 ? undefined : recovery || Date.now() + 3600000
       kiroDb.upsertAccount(acc)
     }
   }

@@ -2,7 +2,6 @@ import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { UsageMetadata } from '../types'
 
 function getBaseDir(): string {
   const p = process.platform
@@ -26,20 +25,65 @@ export class KiroDatabase {
     this.db.run('PRAGMA journal_mode = WAL')
     this.db.run(`
       CREATE TABLE IF NOT EXISTS accounts (
-        id TEXT PRIMARY KEY, email TEXT NOT NULL, real_email TEXT, auth_method TEXT NOT NULL,
+        id TEXT PRIMARY KEY, email TEXT NOT NULL, auth_method TEXT NOT NULL,
         region TEXT NOT NULL, client_id TEXT, client_secret TEXT, profile_arn TEXT,
         refresh_token TEXT NOT NULL, access_token TEXT NOT NULL, expires_at INTEGER NOT NULL,
         rate_limit_reset INTEGER DEFAULT 0, is_healthy INTEGER DEFAULT 1, unhealthy_reason TEXT,
-        recovery_time INTEGER, last_used INTEGER DEFAULT 0
+        recovery_time INTEGER, fail_count INTEGER DEFAULT 0, last_used INTEGER DEFAULT 0,
+        used_count INTEGER DEFAULT 0, limit_count INTEGER DEFAULT 0, last_sync INTEGER DEFAULT 0
       )
     `)
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS usage (
-        account_id TEXT PRIMARY KEY, used_count INTEGER DEFAULT 0, limit_count INTEGER DEFAULT 0,
-        real_email TEXT, last_sync INTEGER,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      )
-    `)
+    const columns = this.db.prepare('PRAGMA table_info(accounts)').all() as any[]
+    const names = new Set(columns.map((c) => c.name))
+    if (names.has('real_email')) {
+      this.db.run('BEGIN TRANSACTION')
+      try {
+        this.db.run(
+          "UPDATE accounts SET email = real_email WHERE real_email IS NOT NULL AND real_email != '' AND email LIKE 'builder-id@aws.amazon.com%'"
+        )
+        this.db.run(`
+          CREATE TABLE accounts_new (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL, auth_method TEXT NOT NULL,
+            region TEXT NOT NULL, client_id TEXT, client_secret TEXT, profile_arn TEXT,
+            refresh_token TEXT NOT NULL, access_token TEXT NOT NULL, expires_at INTEGER NOT NULL,
+            rate_limit_reset INTEGER DEFAULT 0, is_healthy INTEGER DEFAULT 1, unhealthy_reason TEXT,
+            recovery_time INTEGER, fail_count INTEGER DEFAULT 0, last_used INTEGER DEFAULT 0,
+            used_count INTEGER DEFAULT 0, limit_count INTEGER DEFAULT 0, last_sync INTEGER DEFAULT 0
+          )
+        `)
+        this.db.run(`
+          INSERT INTO accounts_new (id, email, auth_method, region, client_id, client_secret, profile_arn, refresh_token, access_token, expires_at, rate_limit_reset, is_healthy, unhealthy_reason, recovery_time, fail_count, last_used, used_count, limit_count, last_sync)
+          SELECT id, email, auth_method, region, client_id, client_secret, profile_arn, refresh_token, access_token, expires_at, COALESCE(rate_limit_reset, 0), COALESCE(is_healthy, 1), unhealthy_reason, recovery_time, COALESCE(fail_count, 0), COALESCE(last_used, 0), 0, 0, 0 FROM accounts
+        `)
+        this.db.run('DROP TABLE accounts')
+        this.db.run('ALTER TABLE accounts_new RENAME TO accounts')
+        this.db.run('COMMIT')
+      } catch (e) {
+        this.db.run('ROLLBACK')
+      }
+    } else {
+      const needed: Record<string, string> = {
+        fail_count: 'INTEGER DEFAULT 0',
+        used_count: 'INTEGER DEFAULT 0',
+        limit_count: 'INTEGER DEFAULT 0',
+        last_sync: 'INTEGER DEFAULT 0'
+      }
+      for (const [n, d] of Object.entries(needed)) {
+        if (!names.has(n)) this.db.run(`ALTER TABLE accounts ADD COLUMN ${n} ${d}`)
+      }
+    }
+    const hasUsageTable = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usage'")
+      .get()
+    if (hasUsageTable) {
+      this.db.run(`
+        UPDATE accounts SET 
+          used_count = COALESCE((SELECT used_count FROM usage WHERE usage.account_id = accounts.id), used_count),
+          limit_count = COALESCE((SELECT limit_count FROM usage WHERE usage.account_id = accounts.id), limit_count),
+          last_sync = COALESCE((SELECT last_sync FROM usage WHERE usage.account_id = accounts.id), last_sync)
+      `)
+      this.db.run('DROP TABLE usage')
+    }
   }
   getAccounts(): any[] {
     return this.db.prepare('SELECT * FROM accounts').all()
@@ -49,24 +93,25 @@ export class KiroDatabase {
       .prepare(
         `
       INSERT INTO accounts (
-        id, email, real_email, auth_method, region, client_id, client_secret,
+        id, email, auth_method, region, client_id, client_secret,
         profile_arn, refresh_token, access_token, expires_at, rate_limit_reset,
-        is_healthy, unhealthy_reason, recovery_time, last_used
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_healthy, unhealthy_reason, recovery_time, fail_count, last_used,
+        used_count, limit_count, last_sync
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        email=excluded.email, real_email=excluded.real_email, auth_method=excluded.auth_method,
+        email=excluded.email, auth_method=excluded.auth_method,
         region=excluded.region, client_id=excluded.client_id, client_secret=excluded.client_secret,
         profile_arn=excluded.profile_arn, refresh_token=excluded.refresh_token,
         access_token=excluded.access_token, expires_at=excluded.expires_at,
         rate_limit_reset=excluded.rate_limit_reset, is_healthy=excluded.is_healthy,
         unhealthy_reason=excluded.unhealthy_reason, recovery_time=excluded.recovery_time,
-        last_used=excluded.last_used
+        fail_count=excluded.fail_count, last_used=excluded.last_used,
+        used_count=excluded.used_count, limit_count=excluded.limit_count, last_sync=excluded.last_sync
     `
       )
       .run(
         acc.id,
         acc.email,
-        acc.realEmail || null,
         acc.authMethod,
         acc.region,
         acc.clientId || null,
@@ -79,37 +124,15 @@ export class KiroDatabase {
         acc.isHealthy ? 1 : 0,
         acc.unhealthyReason || null,
         acc.recoveryTime || null,
-        acc.lastUsed || 0
+        acc.failCount || 0,
+        acc.lastUsed || 0,
+        acc.usedCount || 0,
+        acc.limitCount || 0,
+        acc.lastSync || 0
       )
   }
   deleteAccount(id: string) {
     this.db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
-  }
-  getUsage(): Record<string, UsageMetadata> {
-    const rows = this.db.prepare('SELECT * FROM usage').all() as any[]
-    const usage: Record<string, UsageMetadata> = {}
-    for (const r of rows) {
-      usage[r.account_id] = {
-        usedCount: r.used_count,
-        limitCount: r.limit_count,
-        realEmail: r.real_email,
-        lastSync: r.last_sync
-      }
-    }
-    return usage
-  }
-  upsertUsage(id: string, meta: UsageMetadata) {
-    this.db
-      .prepare(
-        `
-      INSERT INTO usage (account_id, used_count, limit_count, real_email, last_sync)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(account_id) DO UPDATE SET
-        used_count=excluded.used_count, limit_count=excluded.limit_count,
-        real_email=excluded.real_email, last_sync=excluded.last_sync
-    `
-      )
-      .run(id, meta.usedCount, meta.limitCount, meta.realEmail || null, meta.lastSync)
   }
   close() {
     this.db.close()

@@ -24,7 +24,6 @@ export interface RefreshParts {
 export interface ManagedAccount {
   id: string
   email: string
-  realEmail?: string
   authMethod: KiroAuthMethod
   region: KiroRegion
   clientId?: string
@@ -37,15 +36,16 @@ export interface ManagedAccount {
   isHealthy: boolean
   unhealthyReason?: string
   recoveryTime?: number
+  failCount: number
   usedCount?: number
   limitCount?: number
+  lastSync?: number
   lastUsed?: number
 }
 
 export interface UsageMetadata {
   usedCount: number
   limitCount: number
-  realEmail?: string
   lastSync: number
 }
 

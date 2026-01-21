@@ -40,10 +40,10 @@ export function updateAccountQuota(
   const meta = {
     usedCount: usage.usedCount || 0,
     limitCount: usage.limitCount || 0,
-    realEmail: usage.email
+    email: usage.email
   }
   account.usedCount = meta.usedCount
   account.limitCount = meta.limitCount
-  if (meta.realEmail) account.realEmail = meta.realEmail
+  if (usage.email) account.email = usage.email
   if (accountManager) accountManager.updateUsage(account.id, meta)
 }
