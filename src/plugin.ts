@@ -294,6 +294,37 @@ export const createKiroPlugin =
                     retry++
                     continue
                   }
+                  if (res.status === 500) {
+                    acc.failCount = (acc.failCount || 0) + 1
+                    let errorMessage = 'Internal Server Error'
+                    try {
+                      const errorBody = await res.text()
+                      const errorData = JSON.parse(errorBody)
+                      if (errorData.message) {
+                        errorMessage = errorData.message
+                      } else if (errorData.Message) {
+                        errorMessage = errorData.Message
+                      }
+                    } catch (e) {
+                      // If we can't parse the error, use default message
+                    }
+                    if (acc.failCount < 3) {
+                      const delay = 1000 * Math.pow(2, acc.failCount - 1)
+                      showToast(
+                        `Server Error (500): ${errorMessage}. Retrying in ${Math.ceil(delay / 1000)}s...`,
+                        'warning'
+                      )
+                      await sleep(delay)
+                      continue
+                    } else {
+                      acc.failCount = 0
+                      showToast(
+                        `Server Error (500): ${errorMessage}. Switching account...`,
+                        'warning'
+                      )
+                      continue
+                    }
+                  }
                   if (res.status === 429) {
                     const w = parseInt(res.headers.get('retry-after') || '60') * 1000
                     am.markRateLimited(acc, w)
